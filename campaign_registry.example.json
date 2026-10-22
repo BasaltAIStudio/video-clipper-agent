@@ -1,0 +1,18 @@
+{
+  "campaigns": [
+    {
+      "id": "camp_001",
+      "name": "Example Affiliate Campaign",
+      "url": "https://campaigns.example.com/campaign/1",
+      "requirements": {
+        "client": "Example Client",
+        "budget_usd": 500,
+        "zone": "africa"
+      },
+      "eligible_countries": ["KE", "UG", "TZ", "NG"],
+      "submission_webhook": "https://campaigns.example.com/api/v1/clips",
+      "submission_method": "POST_JSON",
+      "ad_keywords": ["shorts", "youtube", "african creator"]
+    }
+  ]
+}

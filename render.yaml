@@ -1,0 +1,72 @@
+# Render Deployment Configuration
+# Deploy this service to Render with the agent.
+
+service:
+  type: web_service
+  name: video-clipper-agent
+  runtime: docker
+  env: docker
+  plan: free
+  region: oregon
+  branch: main
+  autoDeploy: true
+  buildCommand: pip install -r requirements.txt
+  startCommand: python -m agent.run --schedule --interval-seconds 300
+  envVars:
+    - key: AGENT_HOST
+      value: 0.0.0.0
+    - key: AGENT_PORT
+      value: "8000"
+    - key: LLM_PROVIDER
+      value: nvidia_nim
+    - key: NVIDIA_NIM_API_KEY
+      value: REDACTED
+    - key: NVIDIA_NIM_BASE_URL
+      value: https://integrate.api.nvidia.com/v1
+    - key: NVIDIA_NIM_MODEL
+      value: google/gemini-2.0-flash-001
+    - key: LOCAL_WHISPER_MODEL
+      value: tiny
+    - key: OPENROUTER_API_KEY
+      value: REDACTED
+    - key: CONTENT_REWARDS_USERNAME
+      value: REDACTED
+    - key: CONTENT_REWARDS_PASSWORD
+      value: REDACTED
+    - key: N8N_WEBHOOK_URL
+      value: https://your-n8n-webhook.example.com
+    - key: CAMPAIGN_WEBHOOK_URL
+      value: https://contentrewards.com/webhook/analytics
+    - key: AGENT_MAX_VIDEO_SECONDS
+      value: "3600"
+    - key: DEFAULT_NUM_CLIPS
+      value: "3"
+    - key: MAX_NUM_CLIPS
+      value: "10"
+    - key: DEFAULT_ASPECT
+      value: "9:16"
+    - key: TARGET_WIDTH
+      value: "1080"
+
+  healthCheckPath: /health
+  instanceCount: 1
+  autoScaling:
+    minInstances: 1
+    maxInstances: 3
+    cpu: 0.5
+  httpPort: 8000
+  ipAllowList:
+    - cidrBlock: "0.0.0.0/0"
+
+  # Watchdog: Render auto-restarts the service if it crashes
+  # For extra robustness, a separate watchdog service can monitor and
+  # restart if the process dies.
+
+  # Cron scheduled jobs for background tasks
+  scheduledExecutions:
+    - type: recurring
+      expression: "*/15 * * * *"
+      command: "python -c \"from agent.campaign_credentials import save_credentials; from agent.alert import send_alert; print('watchdog tick')\""
+
+# Outline of a second service for the watchdog
+# (not needed for single-instance; Render's free tier handles restarts)

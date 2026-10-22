@@ -1,0 +1,21 @@
+{
+  "agent": {
+    "country": "KE",
+    "country_name": "Kenya",
+    "niche": "flexible",
+    "budget": null,
+    "tier": null,
+    "past_campaigns": [],
+    "preferred_campaigns": [
+      "affiliate",
+      "sponsored",
+      "influencer",
+      "creator"
+    ],
+    "submission_method_preference": [
+      "webhook_post_json",
+      "http_post"
+    ],
+    "notes": "New creator. No budget specified. Flexible on niche. Kenyan. If I have an account on your platform set up, I will give you the details so that you don't need to add it to the code."
+  }
+}

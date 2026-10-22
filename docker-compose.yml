@@ -1,0 +1,19 @@
+version: "3.9"
+services:
+  clipper:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DEFAULT_ASPECT=${DEFAULT_ASPECT:-9:16}
+      - DEFAULT_NUM_CLIPS=${DEFAULT_NUM_CLIPS:-3}
+      - MAX_NUM_CLIPS=${MAX_NUM_CLIPS:-10}
+      - CAMPAIGN_WEBHOOK_URL=${CAMPAIGN_WEBHOOK_URL:-}
+    volumes:
+      - clipper_output:/app/output
+      - clipper_work:/app/work
+    restart: unless-stopped
+
+volumes:
+  clipper_output:
+  clipper_work:

@@ -1,0 +1,20 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment files
+.env
+credentials.env
+.env.local
+
+# Data files
+*.pkl
+*.db
+
+# Node modules
+node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db

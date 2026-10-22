@@ -1,0 +1,166 @@
+{
+  "name": "Campaign Discovery",
+  "nodes": [
+    {
+      "id": "fetch_cre_contentrewards",
+      "name": "Fetch Content Rewards",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1200,
+        300
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://contentrewards.com/c/discover",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (compatible; CampaignDiscoveryBot/1.0)"
+            },
+            {
+              "name": "Accept",
+              "value": "text/html,application/rss+xml,application/atom+xml,application/xml,application/json;q=0.9,*/*;q=0.5"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "parse_cre_campaigns",
+      "name": "Parse Campaigns",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1500,
+        300
+      ],
+      "parameters": {
+        "language": "javascript",
+        "type": "custom",
+        "mode": "runOnceForAllItems",
+        "jsCode": "function extractCampaigns(content) {\n  const campaigns = [];\n  const urlPattern = /href=\"(https:\\/\\/contentrewards\\.com\\/c\\/campaigns\\/[a-f0-9-]+)\"/g;\n  const seen = new Set();\n  let m;\n  while ((m = urlPattern.exec(content)) !== null) {\n    if (!seen.has(m[1])) {\n      seen.add(m[1]);\n      campaigns.push({ url: m[1], discovered: new Date().toISOString() });\n    }\n  }\n  const namePattern = />\\s*([^<]+)\\s*<\\/a>/g;\n  const nameSeen = new Set();\n  let nm;\n  while ((nm = namePattern.exec(content)) !== null) {\n    const name = nm[1].trim();\n    if (name && name.length < 150 && !nameSeen.has(name)) {\n      nameSeen.add(name);\n      const last = campaigns[campaigns.length - 1];\n      if (last) last.name = name;\n    }\n  }\n  return campaigns;\n}\n\nconst results = [];\n$input.all().forEach(function(item) {\n  const j = item.json || {};\n  const content = j.data || '';\n  const campaigns = extractCampaigns(content);\n  campaigns.forEach(c => results.push({ json: Object.assign(c, { source: 'contentrewards', discovered_at: new Date().toISOString() }) }));\n});\nreturn results;"
+      }
+    },
+    {
+      "id": "filter_cre_eligible",
+      "name": "Filter Eligible",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1800,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "combinator": "and",
+            "conditions": [
+              {
+                "id": "cpm",
+                "leftValue": "={{ $json.cpm }}",
+                "rightValue": "=\"\"",
+                "typeValidation": "strict",
+                "operator": {
+                  "type": "boolean",
+                  "operation": "false"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "push_to_clip_pipeline",
+      "name": "Push to Clip Pipeline",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2100,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "{{{ $json.agent_url }}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "body": {
+          "json": true,
+          "raw": "{\\n  \"campaigns\": [{{{ $json._json }}}],\\n  \"agent_url\": \"{{{ $json.agent_url }}}\",\\n  \"submit\": true,\\n  \"campaign_webhook_url\": \"{{{ $json.campaign_webhook_url }}}\\n}"
+        },
+        "options": {
+          "timeout": 60000
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Fetch Content Rewards": {
+      "main": [
+        {
+          "node": "Parse Campaigns",
+          "type": "main",
+          "index": 0
+        }
+      ]
+    },
+    "Parse Campaigns": {
+      "main": [
+        {
+          "node": "Filter Eligible",
+          "type": "main",
+          "index": 0
+        }
+      ]
+    },
+    "Filter Eligible": {
+      "main": [
+        {
+          "node": "Push to Clip Pipeline",
+          "type": "main",
+          "index": 0
+        }
+      ]
+    }
+  },
+  "triggers": [
+    {
+      "id": "every_2_hours",
+      "name": "Every 2 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 2
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "meta": {
+    "version": 1,
+    "anonymous": false
+  }
+}

@@ -1,0 +1,298 @@
+{
+  "discover_url": "https://contentrewards.com/c/discover",
+  "scraping_tabs": [
+    "https://contentrewards.com/c/discover",
+    "https://contentrewards.com/c/discover/clipping",
+    "https://contentrewards.com/c/discover/ugc"
+  ],
+  "campaigns": [
+    {
+      "name": "Alliance Streaming Group / Boxabl x ASG",
+      "url": "https://contentrewards.com/c/campaigns/c821e1c6-ba7e-4fd1-b5d2-449c2c1e2df6",
+      "categories": ["Business"],
+      "cp_min": 2.0,
+      "remaining_budget": 17500,
+      "note": "Business. Established."
+    },
+    {
+      "name": "Clip Farm / HardScope x ClipFarm",
+      "url": "https://contentrewards.com/c/campaigns/d10f3f96-b533-493e-860f-99a4a05edc90?group=1",
+      "categories": ["Entertainment"],
+      "cp_min": 1.0,
+      "remaining_budget": 19500,
+      "note": "5 campaigns. Verified. Entertain."
+    },
+    {
+      "name": "Clip Farm / Topps x Clipfarm Campaign",
+      "url": "https://contentrewards.com/c/campaigns/f354afb5-bc73-4090-b723-35f65dbba276",
+      "categories": ["Campaign"],
+      "cp_min": 1.0,
+      "remaining_budget": 40000,
+      "note": "Largest pool. Verified."
+    },
+    {
+      "name": "ClipUp Official / N3ON X MPJ Podcast clips",
+      "url": "https://contentrewards.com/c/campaigns/e80b84f7-6085-4761-8d5e-be01ca506454",
+      "categories": ["Podcasts"],
+      "cp_min": 1.0,
+      "remaining_budget": 7500,
+      "note": "Podcasts."
+    },
+    {
+      "name": "TJR Weekly Clipping",
+      "url": "https://contentrewards.com/c/campaigns/70baf344-d80f-4ba2-910a-10340f2ea591",
+      "categories": ["Business"],
+      "cp_min": 0.75,
+      "remaining_budget": 21000,
+      "note": "Hot, fast-filling. 1K creators."
+    },
+    {
+      "name": "BloxClips / Sunshine Valley [ROBLOX GAME]",
+      "url": "https://contentrewards.com/c/campaigns/86feeffa-1373-4ade-b37d-e8356f9e35fe",
+      "categories": ["Gaming"],
+      "cp_min": 1.0,
+      "remaining_budget": 2600,
+      "note": "Verified. 99 creators."
+    },
+    {
+      "name": "Owlcat Games / Warhammer 40K Dark Heresy",
+      "url": "https://contentrewards.com/c/campaigns/147ba7f1-212f-46b4-8499-e09cc95cbdfe",
+      "categories": ["Gaming"],
+      "cp_min": 2.0,
+      "remaining_budget": 1200,
+      "note": "Verified. 131 creators."
+    },
+    {
+      "name": "Clip Farm / Jake Paul Clipping",
+      "url": "https://contentrewards.com/c/campaigns/88c16d1a-c184-489c-a896-b3e947829f38",
+      "categories": ["Entertainment"],
+      "cp_min": 0.75,
+      "remaining_budget": 500,
+      "note": "3w. Verified."
+    },
+    {
+      "name": "Clip Farm / Mark Manson",
+      "url": "https://contentrewards.com/c/campaigns/6bdc8e4b-3ebf-44f1-aedb-067589ca9c89",
+      "categories": ["Podcasts"],
+      "cp_min": 1.25,
+      "remaining_budget": 325,
+      "note": "5d. Verified."
+    },
+    {
+      "name": "Clip Farm / SoFi",
+      "url": "https://contentrewards.com/c/campaigns/9f0c4d01-3a67-4db3-8ec4-f8ee2fbe9498",
+      "categories": ["Finance"],
+      "cp_min": 3.0,
+      "remaining_budget": 1500,
+      "note": "1w. High CPM."
+    },
+    {
+      "name": "French Clipping / Call of Duty MW4 (en Francais)",
+      "url": "https://contentrewards.com/c/campaigns/18496202-6029-4a29-a44c-9fc33678fcb9",
+      "categories": ["Gaming"],
+      "cp_min": 1.50,
+      "remaining_budget": 6800,
+      "note": "2mo. Verified."
+    },
+    {
+      "name": "Clip Farm / Higgsfield 20VC Clipping",
+      "url": "https://contentrewards.com/c/campaigns/1ccf8238-ca36-4ff3-a6d1-76956d865ada",
+      "categories": ["Business"],
+      "cp_min": 1.0,
+      "remaining_budget": 453,
+      "note": "2w. Verified."
+    },
+    {
+      "name": "The Clip Ship / LANY Performance Clipping",
+      "url": "https://contentrewards.com/c/campaigns/19fa4b76-a5a9-4e3f-bcc7-9a20e1696cf4",
+      "categories": ["Music"],
+      "cp_min": 1.0,
+      "remaining_budget": 1000,
+      "note": "1mo. Verified."
+    },
+    {
+      "name": "Clip Farm / Ridge Wallet x 4FUN",
+      "url": "https://contentrewards.com/c/campaigns/c00aa458-8719-4d92-9bbf-c48614ce29b5",
+      "categories": ["Finance"],
+      "cp_min": 1.0,
+      "remaining_budget": 608,
+      "note": "4d. Verified."
+    },
+    {
+      "name": "Click Culture / Alpha Futures Clipping Campaign",
+      "url": "https://contentrewards.com/c/campaigns/2c65001c-d6a8-4b14-9ba6-52400794b085",
+      "categories": ["Finance"],
+      "cp_min": 2.0,
+      "remaining_budget": 10700,
+      "note": "4mo. 466 creators. Top performer."
+    },
+    {
+      "name": "Click Culture / Michael Sartain Clipping Army",
+      "url": "https://contentrewards.com/c/campaigns/11fb1708-c50e-4b12-a7a1-d2b73263210a",
+      "categories": ["Personal Brand"],
+      "cp_min": 2.0,
+      "remaining_budget": 10000,
+      "note": "2mo. Personal brand."
+    },
+    {
+      "name": "Shuffle Streamers / Clipping",
+      "url": "https://contentrewards.com/c/campaigns/52a68809-edd4-469c-9227-c480d2f75e12",
+      "categories": ["Entertainment"],
+      "cp_min": 1.50,
+      "remaining_budget": 25000,
+      "note": "Verified."
+    },
+    {
+      "name": "Artist Influence / Geezerbomb",
+      "url": "https://contentrewards.com/c/campaigns/bdebe4a4-be6c-4110-81a5-b598a3e1badc",
+      "categories": ["Music"],
+      "cp_min": 1.0,
+      "remaining_budget": 1000,
+      "note": "Verified."
+    },
+    {
+      "name": "French Clipping / Yomi Denzel",
+      "url": "https://contentrewards.com/c/campaigns/1a5b082a-83ec-483e-bb3e-de630b02f4a6",
+      "categories": ["Personal Brand"],
+      "cp_min": 1.0,
+      "remaining_budget": 287100,
+      "note": "10mo. Verified."
+    },
+    {
+      "name": "BloxClips / ForgeGUI [Roblox]",
+      "url": "https://contentrewards.com/c/campaigns/7a6a234b-1e9e-4da3-a600-54cc3142e710",
+      "categories": ["Technology"],
+      "cp_min": 1.0,
+      "remaining_budget": 189700,
+      "note": "5mo. Verified."
+    },
+    {
+      "name": "Clip Farm / Boxabl Official Clipping",
+      "url": "https://contentrewards.com/c/campaigns/cb5ea267-0c32-4fda-b010-0cc29512039e",
+      "categories": ["Business"],
+      "cp_min": 0.50,
+      "remaining_budget": 85000,
+      "note": "2mo. Verified."
+    },
+    {
+      "name": "CoreAge Rx / Weight Loss Animation Clipping",
+      "url": "https://contentrewards.com/c/campaigns/a616b884-3d98-45ba-9170-bb3010f32250",
+      "categories": ["Business"],
+      "cp_min": 3.0,
+      "remaining_budget": 0,
+      "note": "today. High CPM, no budget."
+    },
+    {
+      "name": "Clipping Mart / Oz Ali (YouTube & TikTok)",
+      "url": "https://contentrewards.com/c/campaigns/7db74a3b-754c-438e-a342-21a8ae67c61b",
+      "categories": ["Personal Brand"],
+      "cp_min": 2.0,
+      "remaining_budget": 0,
+      "note": "today. No budget."
+    },
+    {
+      "name": "Clip Farm / Drummer Records The Storm",
+      "url": "https://contentrewards.com/c/campaigns/aed5f6be-ff24-43ce-9fe6-e366bcb07115",
+      "categories": ["Entertainment"],
+      "cp_min": 0.05,
+      "remaining_budget": 0,
+      "note": "today. Very low CPM."
+    },
+    {
+      "name": "Clip Farm / MilkXP Ep. 3",
+      "url": "https://contentrewards.com/c/campaigns/7d376c42-0d49-4dab-80e9-5c3d76d67103",
+      "categories": ["Entertainment"],
+      "cp_min": 1.25,
+      "remaining_budget": 0,
+      "note": "today."
+    },
+    {
+      "name": "Clip Farm / YoungLA Clipping",
+      "url": "https://contentrewards.com/c/campaigns/f40d3229-94a2-4886-b7cd-94fff1c5622f",
+      "categories": ["Entertainment"],
+      "cp_min": 1.0,
+      "remaining_budget": 0,
+      "note": "today."
+    },
+    {
+      "name": "Sound Network / MaRynn Clipping [8293]",
+      "url": "https://contentrewards.com/c/campaigns/ff3fc61a-e337-4e15-9413-9a2fa8e54c0a",
+      "categories": ["Music"],
+      "cp_min": 1.50,
+      "remaining_budget": 0,
+      "note": "today."
+    },
+    {
+      "name": "Clipping Culture / SEGA Total War SHOGUN 2",
+      "url": "https://contentrewards.com/c/campaigns/997c3235-855c-4fa9-9a4b-d2dbdc8257fe",
+      "categories": ["Entertainment"],
+      "cp_min": 2.0,
+      "remaining_budget": 404,
+      "note": "Verified. 2 creators."
+    },
+    {
+      "name": "ClippedIn / Man Out of Me Sound Campaign",
+      "url": "https://contentrewards.com/c/campaigns/e7b7aa0d-8d5c-460b-bb1e-803ad0492bc5",
+      "categories": ["Music"],
+      "cp_min": 1.0,
+      "remaining_budget": 0,
+      "note": "today."
+    },
+    {
+      "name": "Any Given Friday / Katchafire Sensimillia Clipping",
+      "url": "https://contentrewards.com/c/campaigns/a6fd9c20-4afc-4408-8a93-f75c3e10155a",
+      "categories": ["Entertainment"],
+      "cp_min": 2.0,
+      "remaining_budget": 62,
+      "note": "41 creators."
+    }
+  ],
+  "campaign_page_structure": {
+    "name": "Campaign name",
+    "creator_brand": "Creator/brand name",
+    "category": "Business, Entertainment, Finance, Sports, Movies & TV, Podcasts, Personal Brand, Gaming, Music, etc.",
+    "cpm": "Earnings per 1K verified views (range: $0.05 to $5)",
+    "content_requirements": [
+      "Post must be exciting, engaging, and upbeat",
+      "Minimum video length 10s",
+      "Don't denigrate the image of the creator or other creators",
+      "Content edited for short-form (TikTok, Reels, Shorts)",
+      "Focus on: funny moments, memorable quotes, trading insights, strong opinions, educational takeaways, reactions",
+      "Only public accounts allowed (no private/dedicated accounts)",
+      "New videos only (created after joining)",
+      "One submission per video (each video can only be submitted once)"
+    ],
+    "budget": "Total pool, remaining amount (shows room to join)",
+    "min_max_payout": "Smallest/largest a single clip can earn",
+    "allowed_platforms": ["TikTok", "Instagram", "YouTube", "X", "Facebook"],
+    "reference_materials": "1+ files, locked until you join (source videos, briefs, guidelines)",
+    "creator_requirements": "1+ rules, locked until join (followers, account age, location, etc.)",
+    "content_requirements_rules": "1+ rules (video length, tone, subject matter)",
+    "top_clippers": "Number of creators earning, ranked list with individual earnings",
+    "performance_graph": "Cumulative views over time (daily)",
+    "join_campaign": "Link social account(s) to your Content Rewards profile",
+    "submit_video": "Submit link via Submit Video",
+    "reviews_approves": "Campaign reviews/appoves",
+    "views_verified": "Views verified (platform connections, bot detection, fraud analysis)",
+    "earnings_credited": "Earnings credited per verified view"
+  },
+  "campaigner_expectations": {
+    "no_followers_required": "Earnings based on clip performance, not reach",
+    "public_accounts_only": "Post publicly on TikTok/Reels/Shorts/X",
+    "link_social_accounts": "Connect TikTok, Instagram, YouTube, Facebook",
+    "follow_rules_strictly": "Respect length, tone, subject, platform rules",
+    "new_videos_only": "Only post after joining the campaign",
+    "one_submission_per_video": "Don't duplicate",
+    "bot_resistant_content": "Real engagement patterns, not spammy",
+    "accept_review_process": "Some clips get flagged/rejected; be patient",
+    "no_geographic_restrictions": "Campaigns may have geo limits; check Earnings Data"
+  },
+  "key_risks_and_mitigations": {
+    "bot_detection_flags_automation": "Use real engagement patterns, avoid spammy posting, mix content sources",
+    "content_flagged_for_guidelines": "Strict adherence to requirements, avoid controversial topics",
+    "campaigns_fill_up": "Track budget remaining, join fast, prioritize by CPM",
+    "fraud_analysis_flags_activity": "Follow platform terms, avoid artificial view boosting",
+    "payout_delays": "Submit early in week, plan for 7-day cycle",
+    "account_review": "Use public, genuine-looking profiles, no shortcuts"
+  }
+}

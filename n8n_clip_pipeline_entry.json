@@ -1,0 +1,64 @@
+{
+  "name": "YouTube Clipping Pipeline - Clip Entry",
+  "nodes": [
+    {
+      "parameters": {
+        "event": "CAMPAIGN_DISCOVERED"
+      },
+      "type": "n8n-nodes-base.manualTrigger",
+      "id": "manual-trigger",
+      "name": "Campaign Discovery Trigger"
+    },
+    {
+      "parameters": {
+        "url": "{{{ $json.agent_url }}}/api/clip",
+        "method": "POST",
+        "body": {
+          "youtube_url": "{{ $json.youtube_url }}",
+          "campaign_id": "{{ $json.campaign_id }}",
+          "campaign_name": "{{ $json.campaign_name }}",
+          "num_clips": 3,
+          "submit": true
+        },
+        "sendBody": true,
+        "routeOptions": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "id": "agent-clip",
+      "name": "Video Clipper Agent (Snap Deploy)",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "subject": "Clip Pipeline Report",
+        "text": "Campaign {{ $json.campaign_id }}: {{ $json.num_clips }} clips generated from {{ $json.youtube_url }} in {{ $json.took_seconds }}s. Submit results to the scoring/approval stage."
+      },
+      "type": "n8n-nodes-base.set",
+      "id": "report",
+      "name": "Notifications & Reporting"
+    }
+  ],
+  "connections": {
+    "Campaign Discovery Trigger": {
+      "main": [
+        {
+          "node": "agent-clip",
+          "type": "main",
+          "index": 0
+        }
+      ]
+    },
+    "agent-clip": {
+      "main": [
+        {
+          "node": "report",
+          "type": "main",
+          "index": 0
+        }
+      ]
+    }
+  },
+  "meta": {
+    "templateName": "YouTube Clipping Pipeline - Clip Entry"
+  }
+}
