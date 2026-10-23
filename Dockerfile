@@ -29,9 +29,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the application.
+# Copy the application package (runs as `python -m agent.run`).
 COPY agent /app/agent
-COPY run.py /app/run.py
 
 # Writable volumes (persisted across restarts; bind-mountable on Snap Deploy).
 RUN mkdir -p /app/output /app/work /app/uploads /app/.cache/hf && \
