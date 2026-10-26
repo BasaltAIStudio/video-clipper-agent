@@ -914,44 +914,59 @@ class DecisionLoop:
         log.info("DecisionLoop stopped")
 
 
-def run_decision_engine(
-    url: str,
-    n8n_url: str,
+        stats = PipelineStats()
+        engine.run(
+            url=url,
+            campaign_id=campaign_id,
+            campaign_name=campaign_name,
+            num_clips=num_clips,
+            use_llm=use_llm,
+            use_jev=use_jev,
+            use_heuristic=use_heuristic,
+            model_size=model_size,
+            chunked=chunked,
+            **kwargs,
+        )
+        return stats.get_summary()
+
+
+def process_local_video(
+    video_path: Path,
+    work_dir: Path,
     campaign_id: str,
     campaign_name: str,
-    cache: IdempotencyCache = None,
     num_clips: int = DEFAULT_NUM_CLIPS,
-    use_llm: bool = True,
-    use_jev: bool = False,
-    use_heuristic: bool = True,
     model_size: str = "tiny",
     chunked: bool = True,
+    use_llm: bool = False,
     **kwargs,
 ) -> dict:
-    """
-    Run the decision engine for one video.
+    """Process a local video file (no download step).
 
-    This is the top-level function for the agent.
-    The agent runs this cycle, then trains, then runs again for the next video.
+    Same pipeline as run_decision_engine, but accepts a pre-downloaded video
+    instead of a YouTube URL. This is used by the /api/upload endpoint to test
+    the pipeline with local files without needing YouTube access.
     """
     engine = DecisionEngine(
-        n8n_url=n8n_url,
-        cache=cache,
-        perf_recorder=PerformanceRecorder(),
+        n8n_url=kwargs.get("n8n_url", ""),
+        cache=kwargs.get("cache"),
+        perf_recorder=kwargs.get("perf_recorder"),
         highlight_selector=UnifiedHighlightSelector(),
         learning_loop=LearningLoop(),
         llm_client=kwargs.get("llm_client"),
         llm_model=kwargs.get("model"),
+        output_dir=work_dir,
     )
     return engine.run(
-        url=url,
+        url=str(video_path),
         campaign_id=campaign_id,
         campaign_name=campaign_name,
-        num_clips=num_clips,
+        num_clips=min(max(num_clips, 1), MAX_NUM_CLIPS),
         use_llm=use_llm,
-        use_jev=use_jev,
-        use_heuristic=use_heuristic,
+        use_jev=False,
+        use_heuristic=not use_llm,
         model_size=model_size,
         chunked=chunked,
+        poll_performance=False,
         **kwargs,
     )
