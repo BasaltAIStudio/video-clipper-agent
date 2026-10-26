@@ -25,11 +25,20 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-import torch
-import torch.nn as nn
+
+# torch is heavy and only needed once 50+ clips have performance data, so it is
+# imported lazily. The service must start and clip without it installed.
+try:  # pragma: no cover
+    import torch
+    import torch.nn as nn
+except ImportError:  # pragma: no cover
+    torch = None
+    nn = None
 
 # Neural scorer was deleted - use highlight_selection's heuristic scoring instead
 _SCORER_AVAILABLE = False
+
+from .config import DATA_DIR
 
 log = logging.getLogger("agent.learning_loop")
 
@@ -95,7 +104,7 @@ class LearningLoop:
     """Track clip performance and use it to improve future highlight selection."""
 
     def __init__(self, db_path: Path = None):
-        self.db_path = db_path or Path.home() / ".video_agent" / "learning.db"
+        self.db_path = db_path or DATA_DIR / "learning.db"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
@@ -232,6 +241,9 @@ class LearningLoop:
             lr: Learning rate (lower avoids overshooting on small data)
             dropout: Dropout rate for regularization (reduces overfitting)
         """
+        if torch is None:
+            log.warning("torch not installed - skipping model training")
+            return None
         X, y = self.get_training_data(min_samples=50)
         if X is None or len(X) < 50:
             log.warning("Not enough training data - skipping model training")
@@ -372,8 +384,15 @@ class LearningLoop:
         No neural scorer is used — this is purely features-based scoring from
         actual performance data.
         """
-        # Load the performance model if available
-        model = self._load_performance_model(model_path)
+        # Load the performance model if available (needs torch + a trained model)
+        model = None
+        if torch is not None:
+            try:
+                model = self._load_performance_model(model_path)
+            except Exception as e:  # noqa: BLE001
+                log.warning("could not load performance model: %s", e)
+        if model is None:
+            return []
 
         # Score each segment using learned features or simple heuristic fallback
         scored_segments = []
@@ -421,6 +440,7 @@ class LearningLoop:
         """Load a trained performance model."""
         if model_path is None:
             model_path = Path(__file__).parent / "data" / "performance_predictor.pkl"
+        model_path = Path(model_path)
         if not model_path.exists():
             return None
 

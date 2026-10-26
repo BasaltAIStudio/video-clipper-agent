@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .config import DATA_DIR
+
 log = logging.getLogger("agent.highlight_selection")
 
 
@@ -39,9 +41,9 @@ class UnifiedHighlightSelector:
     """
 
     def __init__(self, db_path: Path = None, cache_dir: Path = None):
-        self.db_path = db_path or Path.home() / ".video_agent" / "highlight_selector.db"
+        self.db_path = db_path or DATA_DIR / "highlight_selector.db"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.cache_dir = cache_dir or Path.home() / ".video_agent" / "highlight_cache"
+        self.cache_dir = cache_dir or DATA_DIR / "highlight_cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
@@ -123,6 +125,7 @@ class UnifiedHighlightSelector:
             performance_summary: Actual performance metrics from Content Rewards
         """
         total_score = sum(h.get("score", 0) for h in highlights)
+        now = datetime.now(timezone.utc).isoformat()
 
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
@@ -131,43 +134,37 @@ class UnifiedHighlightSelector:
                     total_score, performance_summary, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (campaign_id, campaign_name, method_name, num_clips,
-                 total_score, json.dumps(performance_summary), datetime.now(timezone.utc).isoformat()),
+                 total_score, json.dumps(performance_summary), now),
             )
-            conn.commit()
-
-        # Log individual segment selections for detailed analysis
-        for hl in highlights:
-            conn.execute(
-                """INSERT INTO method_scores
-                   (campaign_id, method_name, segment_start, segment_end,
-                    segment_text, score, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (campaign_id, method_name,
-                 hl.get("start", 0), hl.get("end", 0),
-                 hl.get("text", ""), hl.get("score", 0), datetime.now(timezone.utc).isoformat()),
-            )
-            conn.commit()
-
-        if performance_summary:
             for hl in highlights:
                 conn.execute(
-                    """INSERT INTO method_performance
+                    """INSERT INTO method_scores
                        (campaign_id, method_name, segment_start, segment_end,
-                        segment_text, score, performance_score, views, watch_time_seconds,
-                        earnings, engagement_rate, selected_at, evaluation_date)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        segment_text, score, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     (campaign_id, method_name,
                      hl.get("start", 0), hl.get("end", 0),
-                     hl.get("text", ""), hl.get("score", 0),
-                     performance_summary.get("performance_score", 0),
-                     performance_summary.get("views", 0),
-                     performance_summary.get("watch_time", 0),
-                     performance_summary.get("earnings", 0),
-                     performance_summary.get("engagement_rate", 0),
-                     datetime.now(timezone.utc).isoformat(),
-                     performance_summary.get("evaluation_date", datetime.now(timezone.utc).isoformat())),
+                     hl.get("text", ""), hl.get("score", 0), now),
                 )
-                conn.commit()
+            if performance_summary:
+                for hl in highlights:
+                    conn.execute(
+                        """INSERT INTO method_performance
+                           (campaign_id, method_name, segment_start, segment_end,
+                            segment_text, score, performance_score, views, watch_time_seconds,
+                            earnings, engagement_rate, selected_at, evaluation_date)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (campaign_id, method_name,
+                         hl.get("start", 0), hl.get("end", 0),
+                         hl.get("text", ""), hl.get("score", 0),
+                         performance_summary.get("performance_score", 0),
+                         performance_summary.get("views", 0),
+                         performance_summary.get("watch_time", 0),
+                         performance_summary.get("earnings", 0),
+                         performance_summary.get("engagement_rate", 0),
+                         now,
+                         performance_summary.get("evaluation_date", now)),
+                    )
         log.info(f"Logged {method_name} selection for campaign {campaign_id}: {len(highlights)} highlights")
 
     def evaluate_methods(self, campaign_id: str, num_clips: int = 3,
@@ -244,81 +241,55 @@ class UnifiedHighlightSelector:
         Returns:
             List of selected highlights with their scores
         """
-        # Step 1: Try the learned performance model (highest priority)
+        # Step 1: learned performance model (only if torch + a trained model exist)
         try:
-            from agent.learning_loop import LearningLoop
-            ll = LearningLoop()
-            learned_highlights = ll.select_highlights_learned(segments, num_clips=num_clips)
-            if learned_highlights:
-                log.info(f"Using learned performance model for {len(learned_highlights)} highlights")
+            from .learning_loop import LearningLoop
+            learned = LearningLoop().select_highlights_learned(segments, num_clips=num_clips)
+            if learned:
+                log.info("Using learned performance model for %d highlights", len(learned))
                 self.log_method_selection(campaign_id, campaign_name,
-                                          "learned", num_clips, learned_highlights)
-                return learned_highlights
-        except ImportError:
-            log.debug("LearningLoop not available, skipping learned selection")
+                                          "learned", num_clips, learned)
+                return learned
+        except Exception as e:  # noqa: BLE001
+            log.debug("learned selection unavailable: %s", e)
 
-        # Step 3: LLM (best for novelty and capturing viral content patterns)
-        if use_llm and client and model:
+        # Step 2: LLM. `client` is an LLMClient (agent.llm_retry).
+        if use_llm and client is not None and hasattr(client, "complete"):
             try:
-                # Build the prompt
-                prompt = (f"Identify the most viral/clipping-worthy moments in this transcript. "
-                         f"Return {num_clips} timestamps and short descriptions of the best moments. "
-                         f"Focus on: hooks, emotional content, surprises, actionable insights.")
+                from .llm_retry import parse_highlight_response
+                lines = []
                 for seg in segments:
-                    prompt += f"[{seg.start:.1f}-{seg.end:.1f}] {seg.text}\n"
-
-                # Use LLMClient with retry/fallback (FIX #4: wire llm_retry into LLM chain)
-                llm_client = LLMClient(
-                    providers=[LLMProvider(
-                        name="nvidia",
-                        api_key=client,
-                        model=model,
-                        base_url="https://api.nvidia.com/v1",
-                        provider="nvidia",
-                    )],
-                    retry_config=RetryConfig(
-                        max_retries=3,
-                        base_delay=2.0,
-                        max_delay=30.0,
-                        fallback_on_rate_limit=True,
-                        fallback_on_timeout=True,
-                        fallback_on_connection_error=True,
-                    ),
-                )
-
+                    lines.append("[%.1f-%.1f] %s" % (seg["start"], seg["end"], seg["text"]))
+                prompt = (
+                    "Pick the %d most clip-worthy moments (hooks, surprises, emotion, "
+                    "actionable insight) from this transcript. Each clip should be 15-60 "
+                    "seconds and start and end on a complete sentence. Reply ONLY with "
+                    "one line per clip in exactly this format: [start-end] short reason\n\n"
+                    % num_clips
+                ) + "\n".join(lines)[:24000]
                 log.info("Calling LLM for highlights (with retry/fallback)...")
-                response = llm_client.complete(prompt, max_tokens=200, temperature=0.7)
+                response = client.complete(prompt, max_tokens=400, temperature=0.4)
                 highlights = parse_highlight_response(response, num_clips, segments)
+                n = len(highlights)
+                for k, h in enumerate(highlights):
+                    h["score"] = float(n - k)  # keep the LLM's ranking
+                    h["source_method"] = "llm"
                 self.log_method_selection(campaign_id, campaign_name,
                                           "llm", num_clips, highlights)
                 return highlights
-            except Exception as e:
-                log.warning(f"LLM highlight selection failed: {e}")
+            except Exception as e:  # noqa: BLE001
+                log.warning("LLM highlight selection failed, using heuristic: %s", e)
 
-        # Step 4: JEV fast decision engine
-        if use_jev:
-            try:
-                from agent.heuristic import score_segments as score_all_segments
-                all_highlights = score_all_segments({"segments": segments}, num_clips=num_clips)
-                highlights = all_highlights[:num_clips]
-                self.log_method_selection(campaign_id, campaign_name,
-                                          "jev", num_clips, highlights)
-                return highlights
-            except Exception as e:
-                log.warning(f"JEV highlight selection failed: {e}")
-
-        # Step 5: Heuristic fallback (default)
-        log.info("Using heuristic fallback for highlights")
-        highlights = []
-        for seg in segments:
-            score = seg.score if hasattr(seg, 'score') else 0.0
-            if score > 0.5:
-                highlights.append({
-                    "start": seg.start,
-                    "end": seg.end,
-                    "text": seg.text,
-                    "score": score,
-                })
+        # Step 3: heuristic fallback (no LLM)
+        from .heuristic import score_segments
+        scored = score_segments({"segments": segments}, num_clips=num_clips)
+        highlights = [{
+            "start": h["start"],
+            "end": h["end"],
+            "text": h["text"],
+            "score": h.get("overall", 0.0),
+            "source_method": "heuristic",
+        } for h in scored]
         self.log_method_selection(campaign_id, campaign_name,
                                   "heuristic", num_clips, highlights)
         return highlights

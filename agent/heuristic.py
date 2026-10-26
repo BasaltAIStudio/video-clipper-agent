@@ -17,9 +17,6 @@ import re
 from typing import Dict, List, Tuple
 
 # ---------------------------------------------------------------------------
-# JEV fast decision engine (from JEV's src/choice.hpp)
-# ===========================================================================
-from .jev_decision import JVEDecisionEngine, ChoiceAnswer, jev_choose
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -263,55 +260,11 @@ def score_segments(transcript: Dict, num_clips: int = 3) -> List[Dict]:
     if not scored:
         return []
 
-    # Step 3: Use JEV decision engine to aggregate scores across all dimensions
-    #          and pick the best highlights. This replaces simple top-N ranking
-    #          with JEV's cross-phrasing aggregation + confidence scoring.
-
-    # Prepare JEV decision engine with num_options = max clips to return + a few
-    # extra "option" slots for tie-breaking
-    jev = JVEDecisionEngine(num_options=max(num_clips + 2, 3))
-
-    # Build probability lists for each "phrasing" dimension
-    # Phrasing 0: base overall score (normalized to [0,1])
-    # Phrasing 1-4: individual cue dimensions (hook, shock, insight, emotion)
-    dimension_scores = []
-    for h in scored:
-        h["scores"]["overall_norm"] = min(1.0, h["overall"] / 100.0)
-        dimension_scores.append(h)
-
-    # Phrase 0: overall score
-    ph0 = [h["scores"]["overall_norm"] for h in dimension_scores]
-
-    # Phrases 1-4: individual cue dimensions (found on each segment)
-    cue_dims = ["hook", "shock", "insight", "emotion"]
-    phrase_probs = [ph0]
-    for dim in cue_dims:
-        # Map each segment's score for this dimension to [0,1]
-        p = []
-        for h in dimension_scores:
-            s = h["scores"].get(dim, 0.0)
-            # Scale from heuristic range to [0,1]
-            p.append(min(1.0, s / 1.0))
-        phrase_probs.append(p)
-
-    # Register all phrasings with JEV
-    for f, probs in enumerate(phrase_probs):
-        option_probs = {i: probs[i] for i in range(len(probs))}
-        jev.add_phrasing_probs(f, option_probs)
-
-    # Run JEV decision
-    jev_result = jev.decide()
-
-    # Use JEV's normalized probabilities and confidence for highlight selection
-    if jev_result is not None:
-        # Replace "overall" with JEV's normalized probabilities
-        for i, h in enumerate(dimension_scores):
-            h["jev_probability"] = jev_result.probabilities[i]
-            h["jev_best"] = jev_result.best
-            h["jev_confidence"] = jev_result.confidence
-
-    # Sort by JEV aggregated probability
-    dimension_scores.sort(key=lambda x: x["jev_probability"] if 'jev_probability' in x else x["overall"], reverse=True)
+    # Rank by combined cue + salience score. (JEV aggregation was removed: it
+    # only looked at the first num_clips+2 segments and raised IndexError on
+    # longer transcripts.)
+    dimension_scores = scored
+    dimension_scores.sort(key=lambda x: x["overall"], reverse=True)
 
     # Greedily pick non-overlapping highlights (max 50% overlap dedupe)
     kept: List[Dict] = []
@@ -329,5 +282,5 @@ def score_segments(transcript: Dict, num_clips: int = 3) -> List[Dict]:
         if not overlap:
             kept.append(h)
 
-    # Return top num_clips (sorted by JEV probability)
+    # Return top num_clips (sorted by score)
     return kept[:num_clips]

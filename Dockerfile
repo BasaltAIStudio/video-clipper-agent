@@ -38,7 +38,8 @@ RUN mkdir -p /app/output /app/work /app/uploads /app/.cache/hf /app/cache && \
 
 USER nobody
 
-ENV AGENT_HOST=0.0.0.0 \
+ENV AGENT_DATA_DIR=/tmp/video_agent_data \
+    AGENT_HOST=0.0.0.0 \
     AGENT_PORT=8000 \
     DEFAULT_ASPECT=9:16 \
     DEFAULT_NUM_CLIPS=3 \
