@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, File, UploadFile
 from fastapi.responses import JSONResponse
 
 from . import config as cfg
@@ -180,7 +180,6 @@ def upload_clip(file: UploadFile = File(...)):
 
     Returns: JSON manifest (same shape as /api/clip response).
     """
-    from fastapi import File, UploadFile
     from .clipper import ClipError as ClipPipelineError
     from .pipeline import process_local_video
     import os
