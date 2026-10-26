@@ -17,9 +17,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 from . import config as cfg
-from .clipper import ClipError as ClipPipelineError
-from .pipeline import run_decision_engine
-from .pipeline import IdempotencyCache
 
 log = logging.getLogger("agent.app")
 
@@ -72,6 +69,13 @@ def clip(payload: Dict[str, Any]) -> JSONResponse:
       "submit": true               # optional: also POST results to CAMPAIGN_WEBHOOK_URL
     }
     """
+    # Lazy imports: these pull in heavy packages (faster-whisper, openai, etc.)
+    # that would otherwise slow the container's startup past Render's health
+    # check window on the free tier. Import inside the function instead.
+    from .clipper import ClipError as ClipPipelineError
+    from .pipeline import IdempotencyCache
+    from .pipeline import run_decision_engine
+
     youtube_url = (payload.get("youtube_url") or "").strip()
     if not youtube_url:
         raise HTTPException(status_code=400, detail="missing required field: youtube_url")
