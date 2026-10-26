@@ -151,3 +151,13 @@ def list_clips() -> Dict[str, Any]:
         if p.suffix.lower() in (".mp4", ".m4v"):
             clips.append({"name": p.name, "size": p.stat().st_size, "path": str(p)})
     return {"output_dir": str(out), "clips": clips}
+
+
+@app.post("/api/poll")
+def api_poll() -> Dict[str, Any]:
+    """Trigger a Content Rewards analytics poll cycle (no credential needed)."""
+    from agent.poller import ContentRewardsPoller
+
+    poller = ContentRewardsPoller()
+    processed = poller.poll()
+    return {"processed": processed, "status": "ok"}

@@ -1,0 +1,217 @@
+import { workflow, node, trigger, ifElse, expr } from '@n8n/workflow-sdk';
+
+export default workflow('video-agent-campaign-pipeline', 'Video Agent Campaign Pipeline')
+  .add(trigger({
+    type: 'n8n-nodes-base.scheduleTrigger',
+    version: 1,
+    config: {
+      name: 'Campaign Poll',
+      parameters: {
+        cron: '*/15 * * * *',
+        timezone: 'UTC'
+      }
+    }
+  }))
+  .to(node({
+    type: 'n8n-nodes-base.httpRequest',
+    version: 4.3,
+    config: {
+      name: 'Get Campaigns',
+      parameters: {
+        method: 'GET',
+        url: '{{ $json.campaignsApiUrl }}'
+      }
+    }
+  }))
+  .add(ifElse({
+    version: 2.2,
+    config: {
+      name: 'Check Campaigns',
+      parameters: {
+        conditions: {
+          options: { caseSensitive: true, typeValidation: 'loose' },
+          conditions: [
+            { leftValue: expr('{{ $json }}'), operator: { type: 'array', operation: 'notEmpty' } }
+          ],
+          combinator: 'and'
+        }
+      }
+    }
+  }))
+    .onTrue(
+      node({
+        type: 'n8n-nodes-base.httpRequest',
+        version: 4.3,
+        config: {
+          name: 'Get Campaign Details',
+          parameters: {
+            method: 'GET',
+            url: '{{ $json[0].detailsUrl }}'
+          }
+        }
+      })
+    )
+    .onFalse(
+      node({
+        type: 'n8n-nodes-base.code',
+        version: 1.1,
+        config: {
+          name: 'Log & Return',
+          parameters: {
+            mode: 'code',
+            code: '/* No pending campaigns — wait for next poll. */'
+          }
+        }
+      })
+    )
+  .to(node({
+    type: 'n8n-nodes-base.httpRequest',
+    version: 4.3,
+    config: {
+      name: 'Apply for Campaign',
+      parameters: {
+        method: 'POST',
+        url: '{{ $json[0].applyUrl }}',
+        parameters: {
+          json: {
+            agentId: '{{ $json[0].agentId }}',
+            campaignId: '{{ $json[0].campaignId }}'
+          }
+        }
+      }
+    }
+  }))
+  .to(node({
+    type: 'n8n-nodes-base.httpRequest',
+    version: 4.3,
+    config: {
+      name: 'Get Assigned Video',
+      parameters: {
+        method: 'GET',
+        url: '{{ $json[0].videoUrl }}'
+      }
+    }
+  }))
+  .to(node({
+    type: 'n8n-nodes-base.httpRequest',
+    version: 4.3,
+    config: {
+      name: 'Run Clipper Agent',
+      parameters: {
+        method: 'POST',
+        url: 'https://video-clipper-agent-aju4.onrender.com/api/clip',
+        parameters: {
+          json: {
+            youtubeUrl: '{{ $json[0].sourceVideoUrl }}',
+            campaignId: '{{ $json[0].campaignId }}',
+            campaignName: '{{ $json[0].campaignName }}',
+            numClips: '{{ $json[0].numClips }}'
+          }
+        }
+      }
+    }
+  }))
+  .to(node({
+    type: 'n8n-nodes-base.code',
+    version: 1.1,
+    config: {
+      name: 'Enhance Clips',
+      parameters: {
+        mode: 'code',
+        code: '/* Apply viral formulas: add captions, background music/sound, thumbnail styling, framing. Replace placeholder template logic with the agent pipeline feedback. */'
+      }
+    }
+  }))
+  .to(node({
+    type: 'n8n-nodes-base.httpRequest',
+    version: 4.3,
+    config: {
+      name: 'Post to Zernio',
+      parameters: {
+        method: 'POST',
+        url: 'https://zernio.com/api/v1/upload',
+        parameters: {
+          json: {
+            youtubeUrl: '{{ $json[0].youtubeUrl }}',
+            tiktokUrl: '{{ $json[0].tiktokUrl }}',
+            apiKey: '{{ $env.ZERNIO_API_KEY }}'
+          }
+        }
+      }
+    }
+  }))
+  .to(node({
+    type: 'n8n-nodes-base.httpRequest',
+    version: 4.3,
+    config: {
+      name: 'Poll Analytics',
+      parameters: {
+        method: 'GET',
+        url: 'https://zernio.com/api/v1/analytics',
+        parameters: {
+          json: {
+            videoIds: '{{ $json[0].videoIds }}'
+          }
+        }
+      }
+    }
+  }))
+  .add(ifElse({
+    version: 2.2,
+    config: {
+      name: 'Check Threshold',
+      parameters: {
+        conditions: {
+          options: { caseSensitive: true, typeValidation: 'loose' },
+          conditions: [
+            { leftValue: expr('{{ $json.views }}'), operator: { type: 'number', operation: 'greaterThanOrEqual' }, rightValue: '{{ $json.targetViews }}' }
+          ],
+          combinator: 'and'
+        }
+      }
+    }
+  }))
+    .onTrue(
+      node({
+        type: 'n8n-nodes-base.httpRequest',
+        version: 4.3,
+        config: {
+          name: 'Submit to Content Rewards',
+          parameters: {
+            method: 'POST',
+            url: '{{ $json.rewardsUrl }}',
+            parameters: {
+              json: {
+                videoLink: '{{ $json[0].videoLink }}',
+                accounts: ['youtube', 'tiktok'],
+                campaignId: '{{ $json[0].campaignId }}'
+              }
+            }
+          }
+        }
+      })
+    )
+    .onFalse(
+      node({
+        type: 'n8n-nodes-base.code',
+        version: 1.1,
+        config: {
+          name: 'Log & Return',
+          parameters: {
+            mode: 'code',
+            code: '/* No viral payout yet — return to campaign poll loop. */'
+          }
+        }
+      })
+    )
+  .to(node({
+    type: 'n8n-nodes-base.code',
+    version: 1.1,
+    config: {
+      name: 'No Campaigns',
+      parameters: {
+        mode: 'code',
+        code: '/* No pending campaigns — wait for next poll. */'
+      }
+    }
+  }))

@@ -338,21 +338,31 @@ class ContentRewardsScraper:
             campaign.update(detail)
         return campaign
 
-    def check_campaign_credential(self, campaign_url: str, creds: dict) -> Tuple[bool, str]:
+    def check_campaign_credential(self, campaign_url: str) -> Tuple[bool, str]:
         """
         Check if the scraper can use account credentials to access the campaign.
 
+        Credentials are loaded from environment variables (CR_CONTENT_REWARDS_USERNAME,
+        CR_CONTENT_REWARDS_PASSWORD) with fallback to a local credentials.env file.
         Returns (available, message) tuple.
         """
-        # Check for credentials
-        if not creds:
-            return False, "No credentials loaded"
+        # Load credentials: env vars first, then local file
+        from .config import CR_CONTENT_REWARDS_USERNAME, CR_CONTENT_REWARDS_PASSWORD
+
+        creds = {
+            "CR_CONTENT_REWARDS_USERNAME": CR_CONTENT_REWARDS_USERNAME,
+            "CR_CONTENT_REWARDS_PASSWORD": CR_CONTENT_REWARDS_PASSWORD,
+        }
+
+        if not CR_CONTENT_REWARDS_USERNAME or not CR_CONTENT_REWARDS_PASSWORD:
+            from .campaign_credentials import load_credentials
+            creds.update(load_credentials())
 
         # Check for required keys
         required_keys = ["CR_CONTENT_REWARDS_USERNAME", "CR_CONTENT_REWARDS_PASSWORD"]
         missing = [k for k in required_keys if not creds.get(k)]
         if missing:
-            return False, f"Missing credentials: {', '.join(missing)}"
+            return False, f"No credentials loaded: {', '.join(missing)}"
 
         # Check if the campaign is a personal campaign (may require login)
         if "personal" in campaign_url.lower() or "my" in campaign_url.lower():

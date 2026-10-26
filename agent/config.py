@@ -96,6 +96,10 @@ MAX_CLIP_DURATION = float(os.getenv("MAX_CLIP_DURATION", "180.0"))
 # Campaign / n8n integration
 CAMPAIGN_WEBHOOK_URL = os.getenv("CAMPAIGN_WEBHOOK_URL", "https://contentrewards.com/webhook/analytics")
 
+# Content Rewards credentials (loaded from env vars, never from local files)
+CR_CONTENT_REWARDS_USERNAME = os.getenv("CR_CONTENT_REWARDS_USERNAME", "")
+CR_CONTENT_REWARDS_PASSWORD = os.getenv("CR_CONTENT_REWARDS_PASSWORD", "")
+
 # YouTube API via OAuth (sign-in in n8n) or API key
 # If set, used as fallback when n8n YouTube node doesn't have credentials
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").strip()
