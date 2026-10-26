@@ -11,11 +11,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Server / runtime
-# ---------------------------------------------------------------------------
-HOST = os.getenv("AGENT_HOST", "0.0.0.0")
-PORT = int(os.getenv("AGENT_PORT", "8000"))
+# Render injects a `PORT` env var for web services; honour it so the app
+# listens on Render's public port rather than the Dockerfile default 8000.
+PORT = int(os.getenv("PORT") or os.getenv("AGENT_PORT", "8000"))
+HOST = os.getenv("HOST") or os.getenv("AGENT_HOST", "0.0.0.0")
 WORK_DIR = Path(os.getenv("AGENT_WORK_DIR", "/app/work")).resolve()
 OUTPUT_DIR = Path(os.getenv("AGENT_OUTPUT_DIR", "/app/output")).resolve()
 UPLOAD_DIR = Path(os.getenv("AGENT_UPLOAD_DIR", "/app/uploads")).resolve()
