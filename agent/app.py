@@ -166,6 +166,75 @@ def get_clip(name: str):
     return FileResponse(str(path), media_type="video/mp4", filename=safe)
 
 
+@app.post("/api/upload")
+def upload_clip(file: UploadFile = File(...)):
+    """Process a locally-uploaded video file (no YouTube download needed).
+
+    Accepts a multipart/form-data upload with a single 'file' field containing
+    an MP4 video. The pipeline transcribes, selects highlights, and renders clips
+    just like /api/clip, but works with any local video file.
+
+    This is the workaround for the Render free tier: the sandbox has no outbound
+    internet access to YouTube, so you cannot test /api/clip with a real URL.
+    Upload your own video instead.
+
+    Returns: JSON manifest (same shape as /api/clip response).
+    """
+    from fastapi import File, UploadFile
+    from .clipper import ClipError as ClipPipelineError
+    from .pipeline import process_local_video
+    import os
+    import uuid
+
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in (".mp4", ".m4v", ".mov", ".avi", ".mkv"):
+        raise HTTPException(status_code=400, detail=f"unsupported video extension: {ext}")
+
+    # Save to a working directory
+    import tempfile
+    tmp = tempfile.mkdtemp(dir=cfg.OUTPUT_DIR)
+    video_path = Path(tmp) / file.filename
+    with open(video_path, "wb") as f:
+        f.write(file.file.read())
+
+    campaign_id = str(uuid.uuid4())
+    campaign_name = f"upload_{campaign_id[:8]}"
+
+    started = time.time()
+    try:
+        result = process_local_video(
+            video_path=video_path,
+            work_dir=Path(tmp),
+            campaign_id=campaign_id,
+            campaign_name=campaign_name,
+            num_clips=int(payload.get("num_clips", cfg.DEFAULT_NUM_CLIPS)),
+            model_size="tiny",
+            chunked=True,
+        )
+    except ClipPipelineError as e:
+        log.error("upload pipeline failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"upload failed: {e}")
+    except Exception as e:
+        log.exception("unexpected upload error")
+        raise HTTPException(status_code=500, detail=f"upload failed: {e}")
+
+    manifest: Dict[str, Any] = {
+        "job_id": os.getenv("AGENT_JOB_ID", "unknown"),
+        "campaign_id": campaign_id,
+        "campaign_name": campaign_name,
+        "youtube_url": None,
+        "uploaded_file": file.filename,
+        "status": "completed",
+        "num_clips": len(result.get("clips", [])),
+        "duration": result.get("transcript_duration", 0.0),
+        "clips": result.get("clips", []),
+        "took_seconds": round(time.time() - started, 3),
+    }
+
+    log.info("upload complete: %s -> %d clips in %.1fs", file.filename, len(manifest["clips"]), manifest["took_seconds"])
+    return JSONResponse(content=manifest)
+
+
 @app.post("/api/poll")
 def api_poll() -> Dict[str, Any]:
     """Trigger a Content Rewards analytics poll cycle (no credential needed)."""
