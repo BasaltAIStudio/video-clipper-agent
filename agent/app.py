@@ -92,7 +92,7 @@ def clip(payload: Dict[str, Any]) -> JSONResponse:
     try:
         result = run_decision_engine(
             url=youtube_url,
-            n8n_url=cfg.CAMPAIGN_WEBHOOK_URL or "https://your-n8n-webhook.example.com",
+            n8n_url="",  # the route posts to the webhook itself (below), only if submit is true
             campaign_id=campaign_id,
             campaign_name=campaign_name,
             num_clips=min(max(num_clips, 1), cfg.MAX_NUM_CLIPS),
@@ -100,6 +100,7 @@ def clip(payload: Dict[str, Any]) -> JSONResponse:
             use_heuristic=not cfg.USE_LLM,
             model_size="tiny",
             chunked=True,
+            poll_performance=False,
         )
     except ClipPipelineError as e:
         log.error("clip pipeline failed for %s: %s", youtube_url, e)
@@ -114,13 +115,13 @@ def clip(payload: Dict[str, Any]) -> JSONResponse:
         "campaign_name": payload.get("campaign_name"),
         "youtube_url": youtube_url,
         "status": "completed",
-        "num_clips": len(result.get("clips", [])),
-        "duration": result.get("duration", 0.0),
-        "clips": result.get("clips", []),
+        "num_clips": len(result["manifest"].get("clips", [])),
+        "duration": result["manifest"].get("transcript_duration", 0.0),
+        "clips": result["manifest"].get("clips", []),
         "took_seconds": round(time.time() - started, 3),
     }
 
-    if cfg.CAMPAIGN_WEBHOOK_URL and payload.get("submit", True):
+    if cfg.CAMPAIGN_WEBHOOK_URL and bool(payload.get("submit", False)):
         _submit_to_webhook(manifest)
         manifest["submitted"] = True
 
@@ -151,6 +152,18 @@ def list_clips() -> Dict[str, Any]:
         if p.suffix.lower() in (".mp4", ".m4v"):
             clips.append({"name": p.name, "size": p.stat().st_size, "path": str(p)})
     return {"output_dir": str(out), "clips": clips}
+
+
+@app.get("/clips/{name}")
+def get_clip(name: str):
+    """Serve one rendered clip so it has a public https URL (needed by uploaders)."""
+    from fastapi.responses import FileResponse
+
+    safe = Path(name).name
+    path = cfg.OUTPUT_DIR / safe
+    if safe != name or not path.is_file() or path.suffix.lower() not in (".mp4", ".m4v"):
+        raise HTTPException(status_code=404, detail="clip not found")
+    return FileResponse(str(path), media_type="video/mp4", filename=safe)
 
 
 @app.post("/api/poll")

@@ -34,6 +34,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .config import DATA_DIR
+
 log = logging.getLogger("agent.profiler")
 
 
@@ -46,7 +48,7 @@ class PipelineProfiler:
     """
 
     def __init__(self, profile_output: Path = None, log_level: int = logging.INFO):
-        self.profile_output = profile_output or Path.home() / ".video_agent" / "profile"
+        self.profile_output = profile_output or DATA_DIR / "profile"
         self.profile_output.parent.mkdir(parents=True, exist_ok=True)
         self.log_level = log_level
 

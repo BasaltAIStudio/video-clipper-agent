@@ -3,3 +3,5 @@ uvicorn[standard]>=0.27
 yt-dlp>=2024.1.1
 faster-whisper>=1.0.0
 requests>=2.31
+numpy>=1.24
+# torch is optional (only for the learned-performance model after 50+ clips); not installed by default.

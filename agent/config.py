@@ -21,6 +21,10 @@ UPLOAD_DIR = Path(os.getenv("AGENT_UPLOAD_DIR", "/app/uploads")).resolve()
 MAX_WORK_DIR_BYTES = int(os.getenv("AGENT_MAX_WORK_DIR_BYTES", str(4 * 1024 * 1024 * 1024)))
 MAX_VIDEO_SECONDS = int(os.getenv("AGENT_MAX_VIDEO_SECONDS", "7200"))  # guard hard cap
 
+# Writable scratch/state dir. The container user (nobody) has no home dir, so
+# never use Path.home().
+DATA_DIR = Path(os.getenv("AGENT_DATA_DIR", "/tmp/video_agent_data"))
+
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-2.0-flash-001")
@@ -121,4 +125,3 @@ def logger_config(name: str = "agent"):
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)
     return logger
-

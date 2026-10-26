@@ -29,9 +29,9 @@ TARGET_PIXELS: dict[str, tuple[int, int]] = {
     "1:1": (TARGET_WIDTH, TARGET_WIDTH),
 }
 
-LOUDNORM_I = float(os.getenv("LOUDNORM_I", "14.0"))
+LOUDNORM_I = float(os.getenv("LOUDNORM_I", "-14.0"))
 LOUDNORM_LRA = float(os.getenv("LOUDNORM_LRA", "11.0"))
-LOUDNORM_TPK = float(os.getenv("LOUDNORM_TPK", "1.0"))
+LOUDNORM_TPK = float(os.getenv("LOUDNORM_TPK", "-1.5"))
 
 
 class ClipError(RuntimeError):
@@ -81,21 +81,22 @@ def render_clip(
     w, h = _target_aspect(aspect)
     if preview:
         scale = (480, 854) if aspect == "9:16" else (854, 480)
-        vf = f"scale={scale[0]}:{scale[1]}:force_original_aspect_ratio=decrease,pad={scale[0]}:{scale[1]}:(w-iw)/2:(h-ih)/2"
+        vf = f"scale={scale[0]}:{scale[1]}:force_original_aspect_ratio=decrease,pad={scale[0]}:{scale[1]}:(ow-iw)/2:(oh-ih)/2"
         af = "aresample=async=1"
     else:
-        vf = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(w-iw)/2:(h-ih)/2,format=yuv420p"
+        vf = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,format=yuv420p"
         af = f"loudnorm=I={LOUDNORM_I}:TP={LOUDNORM_TPK}:LRA={LOUDNORM_LRA}"
 
     vf += ",setsar=1"
     vf_extra = ""
     if captions_ass and captions_ass.exists():
-        vf_extra = f",subtitles={captions_ass}"
+        esc = str(captions_ass).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+        vf_extra = f",subtitles='{esc}'"
 
     crf, preset = ("28", "veryfast") if preview else ("23", "fast")
 
     cmd = [
-        FFMPEG_BINARY, "-y",
+        FFMPEG_BINARY, "-nostdin", "-filter_threads", "2", "-y",
         "-ss", str(start),
         "-i", str(source_path),
         "-t", str(end - start),
@@ -103,13 +104,14 @@ def render_clip(
         "-af", af,
         "-map", "0:v:0", "-map", "0:a:0",
         "-c:v", "libx264", "-preset", preset, "-crf", crf,
+        "-threads", os.getenv("FFMPEG_THREADS", "2"),
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
         "-shortest",
         str(output_path),
     ]
     log.info("render_clip %.1fs->%.1fs  -> %s", start, end, output_path.name)
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         tail = (result.stderr or "").strip().splitlines()
         raise ClipError(f"ffmpeg failed rc={result.returncode}: {' | '.join(tail[-5:])}")
@@ -124,9 +126,13 @@ def build_ass_subtitles(segments: List[dict], start: float, end: float, *, font_
     lines.append("[Script Info]")
     lines.append("Title: Clipper Captions")
     lines.append("ScriptType: v4.00+")
+    lines.append("PlayResX: 1080")
+    lines.append("PlayResY: 1920")
+    lines.append("")
     lines.append("[V4+ Styles]")
     lines.append(f"Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
     lines.append(f"Style: Default,{font_name},{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,0,0,2,10,10,10,1")
+    lines.append("")
     lines.append("[Events]")
     lines.append("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
 
@@ -153,12 +159,13 @@ def build_ass_subtitles(segments: List[dict], start: float, end: float, *, font_
 
     for ts_start, ts_end, txt in merged:
         def fmt(t: float) -> str:
-            t = max(0.0, float(t))
-            h = int(t // 3600)
-            m = int((t % 3600) // 60)
-            s = int(t % 60)
-            ms = int(round((t % 1) * 1000))
-            return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
-        lines.append(f"Layer 1:0::{fmt(ts_start)}::{fmt(ts_end)},Default,,0,0,0,,{txt}")
+            t = max(0.0, float(t) - start)  # clip-relative (input is seeked)
+            cs = int(round(t * 100))
+            h, cs = divmod(cs, 360000)
+            m, cs = divmod(cs, 6000)
+            sec, cs = divmod(cs, 100)
+            return f"{h}:{m:02d}:{sec:02d}.{cs:02d}"
+        safe = txt.replace("\\", "").replace("{", "(").replace("}", ")")
+        lines.append(f"Dialogue: 0,{fmt(ts_start)},{fmt(ts_end)},Default,,0,0,0,,{safe}")
 
     return "\n".join(lines)
