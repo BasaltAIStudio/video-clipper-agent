@@ -33,9 +33,9 @@ from typing import Any, Dict, List, Optional
 import yt_dlp
 
 from .boundary import adjust_window
-from .clipper import ClipError, render_clip
+from .clipper import ClipError, render_clip, build_ass_subtitles
 from .config import (
-    AGENT_CACHE_DIR, DEFAULT_NUM_CLIPS, MAX_CLIP_DURATION, MAX_NUM_CLIPS,
+    AGENT_CACHE_DIR, DATA_DIR, OUTPUT_DIR, DEFAULT_NUM_CLIPS, MAX_CLIP_DURATION, MAX_NUM_CLIPS,
     logger_config, PROVIDER_ORDER, USE_LLM,
 )
 from .jev_decision import ChoiceAnswer, JVEDecisionEngine
@@ -46,7 +46,7 @@ from .llm import prompt_highlights
 from .llm_retry import LLMClient, LLMProvider, RetryConfig
 from .profiler import PipelineProfiler
 from .retention import RetentionCurvePredictor
-from .transcriber import transcribe, transcribe_parallel
+from .transcriber import transcribe
 
 log = logger_config('agent.pipeline')
 
@@ -59,7 +59,11 @@ class IdempotencyCache:
 
     def __init__(self, cache_dir: Path = AGENT_CACHE_DIR):
         self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            self.cache_dir = DATA_DIR / "cache"
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.cache_dir / "submitted_clips.db"
         self._init_db()
 
@@ -132,7 +136,7 @@ class PerformanceRecorder:
     """
 
     def __init__(self, db_path: Path = None):
-        self.db_path = db_path or Path.home() / ".video_agent" / "performance.db"
+        self.db_path = db_path or DATA_DIR / "performance.db"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
@@ -298,59 +302,6 @@ def _download_video(url: str, work_dir: Path) -> Path:
 
 
 
-def transcribe_parallel(
-    video_url: str,
-    work_dir: Path,
-    model_size: str = "tiny",
-    use_cache: bool = True,
-    chunked: bool = False,
-) -> tuple:
-    """
-    Download a video and transcribe it with parallel model loading.
-
-    The Whisper model is pre-loaded in a background thread while the
-    video downloads, so model loading overlaps with I/O. FIX #7.
-
-    Returns (segments, info) tuple.
-    """
-    from .transcriber import get_model, _get_video_duration
-
-    work_dir = Path(work_dir)
-    work_dir.mkdir(parents=True, exist_ok=True)
-    tmpdir = tempfile.mkdtemp(dir=str(work_dir))
-
-    try:
-        # Phase 1: Download video + pre-load model in parallel
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            download_future = executor.submit(_download_only, video_url, tmpdir)
-            model_future = executor.submit(get_model, model_size)
-
-            video_path = download_future.result()
-            model = model_future.result()
-
-        log.info(f"Downloaded video: {video_path}")
-
-        # Phase 2: Transcribe (model already loaded, starts immediately)
-        duration = _get_video_duration(video_path)
-        log.info(f"Video duration: {duration:.0f}s")
-
-        result = transcribe(
-            video_path,
-            language="en",
-            word_timestamps=True,
-            model_size=model_size,
-            use_cache=use_cache,
-            chunked=chunked,
-        )
-
-        log.info(f"Transcription complete: {result.get('duration', 0):.1f}s, "
-                 f"{len(result.get('segments', []))} segments")
-        return result["segments"], result
-
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-
-
 # ---------------------------------------------------------------------------
 # Highlight Selection (A/B tested via UnifiedHighlightSelector)
 # ---------------------------------------------------------------------------
@@ -453,17 +404,20 @@ def _render_clips(
         clip_duration = min(end - start, max_duration)
         clip_duration = max(clip_duration, min_duration)
 
-        work_file = work_dir / f"clip_{i}.mp4"
-        ass_file = work_dir / f"clip_{i}.ass"
+        prefix = f"{int(time.time())}_{i}_"
+        work_file = work_dir / f"{prefix}clip.mp4"
+        ass_file = work_dir / f"{prefix}clip.ass"
 
         seg = None
-        for s in segments:
-            if hasattr(s, 'start') and s.start <= start < s.end:
-                seg = s
-                break
-            elif isinstance(s, dict) and s.get("start", 0) <= start < s.get("end", 0):
-                seg = s
-                break
+        try:
+            seg_dicts = [x if isinstance(x, dict) else {"start": x.start, "end": x.end, "text": x.text}
+                         for x in segments]
+            ass_text = build_ass_subtitles(seg_dicts, start, start + clip_duration, font_size=64)
+            if "Dialogue:" in ass_text:
+                ass_file.write_text(ass_text, encoding="utf-8")
+                seg = True
+        except Exception as e:  # noqa: BLE001
+            log.warning("caption generation failed for clip %s: %s", i, e)
 
         try:
             render_clip(
@@ -475,11 +429,13 @@ def _render_clips(
                 captions_ass=ass_file if seg else None,
             )
             clips.append({
-                "clip_id": f"clip_{i}",
+                "clip_id": f"{prefix}clip",
                 "start": start,
                 "end": start + clip_duration,
                 "duration": clip_duration,
                 "video_url": f"file://{work_file}",
+                "file_name": work_file.name,
+                "public_path": f"/clips/{work_file.name}",
                 "ass_url": f"file://{ass_file}",
                 "score": hl.get('score', 0),
                 "text": hl.get('text', ''),
@@ -598,7 +554,7 @@ class DecisionEngine:
         self.learning_loop = learning_loop or LearningLoop()
         self.llm_client = llm_client
         self.llm_model = llm_model
-        self.output_dir = output_dir or Path.home() / ".video_agent" / "output"
+        self.output_dir = output_dir or OUTPUT_DIR
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.stats = PipelineStats()
         self.profiler = PipelineProfiler()
@@ -633,7 +589,7 @@ class DecisionEngine:
                 datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         work_dir.mkdir(parents=True, exist_ok=True)
 
-        campaign_output = self.output_dir / campaign_id
+        campaign_output = self.output_dir
         campaign_output.mkdir(parents=True, exist_ok=True)
 
         video_path = None
@@ -648,11 +604,13 @@ class DecisionEngine:
             )
 
             log.info("Step 2: Transcribing (parallel model load)...")
-            segments, info = self.profiler.profile(
-                transcribe_parallel, url, work_dir,
+            info = self.profiler.profile(
+                transcribe, video_path,
+                language="en", word_timestamps=True,
                 model_size=model_size, use_cache=True, chunked=chunked,
                 step_name="transcribe",
             )
+            segments = info["segments"]
 
             log.info("Step 3: Generating candidate highlights (A/B tested)...")
             candidates = self.profiler.profile(

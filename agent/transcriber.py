@@ -19,6 +19,8 @@ import subprocess
 import tempfile
 import shutil  # Added for parallel transcribe
 
+import yt_dlp
+
 from .clipper import ClipError
 from .config import (
     LOCAL_WHISPER_COMPUTE_TYPE,
@@ -31,6 +33,7 @@ from .config import (
 
 def _download_only(url: str, tmpdir: Path) -> Path:
     """Download video to tmpdir (for parallel execution)."""
+    tmpdir = Path(tmpdir)
     ydl_opts = {
         'outtmpl': str(tmpdir / 'source_video.%(ext)s'),
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -55,7 +58,11 @@ __all__ = ["transcribe", "transcribe_chunked", "transcribe_parallel", "get_model
 # ---------------------------------------------------------------------------
 
 TRANSCRIPT_CACHE_DIR = Path(os.getenv("AGENT_TRANSCRIPT_CACHE", "/app/cache/transcripts"))
-TRANSCRIPT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    TRANSCRIPT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    TRANSCRIPT_CACHE_DIR = Path(tempfile.gettempdir()) / "transcripts"
+    TRANSCRIPT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 CACHE_SUFFIX = ".transcript.json"
 
@@ -192,7 +199,7 @@ def _transcribe_full(
 
     segments: List[dict] = []
 
-    generator = model.transcribe(
+    generator, _info = model.transcribe(
         str(video_path),
         language=language,
         word_timestamps=word_timestamps,
@@ -298,7 +305,11 @@ def transcribe_chunked(
 
     log.info(f"Video is {duration:.0f}s — chunking into {chunk_duration:.0f}s segments")
 
-    chunks = _split_video_into_chunks(video_path, chunk_duration)
+    chunks = []
+    t = 0.0
+    while t < duration:
+        chunks.append({"index": len(chunks), "start": t, "end": min(t + chunk_duration, duration)})
+        t += chunk_duration
 
     # Phase 1: Download audio splits for each chunk in parallel (FIX #3)
     # Each chunk is an audio segment extracted from the original video.
@@ -320,6 +331,8 @@ def transcribe_chunked(
     # re-initialized per chunk.
     all_segments = []
     for i, chunk_data in enumerate(chunk_results):
+        if not chunk_data.get("temp_file"):
+            continue
         log.info(f"Chunk {i}: transcribing {chunk_data['duration']:.0f}s audio (temp file: {chunk_data['temp_file']})")
         chunk_result = _transcribe_full(
             Path(chunk_data["temp_file"]), language, word_timestamps, model_size, use_cache
