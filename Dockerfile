@@ -33,8 +33,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY agent /app/agent
 
 # Writable volumes (persisted across restarts; bind-mountable on Snap Deploy).
-RUN mkdir -p /app/output /app/work /app/uploads /app/.cache/hf && \
-    chown -R nobody:nogroup /app/output /app/work /app/uploads 2>/dev/null || true
+RUN mkdir -p /app/output /app/work /app/uploads /app/.cache/hf /app/cache && \
+    chown -R nobody:nogroup /app/output /app/work /app/uploads /app/.cache/hf /app/cache 2>/dev/null || true
 
 USER nobody
 
