@@ -614,33 +614,42 @@ class DecisionEngine:
                     step_name="download",
                 )
 
-            log.info("Step 2: Transcribing (parallel model load)...")
-            info = self.profiler.profile(
-                transcribe, video_path,
-                language="en", word_timestamps=True,
-                model_size=model_size, use_cache=True, chunked=chunked,
-                step_name="transcribe",
-            )
-            segments = info["segments"]
+            try:
+                log.info("Step 2: Transcribing (parallel model load)...")
+                info = self.profiler.profile(
+                    transcribe, video_path,
+                    language="en", word_timestamps=True,
+                    model_size=model_size, use_cache=True, chunked=chunked,
+                    step_name="transcribe",
+                )
+                segments = info["segments"]
+            except Exception as e:
+                raise ClipError(f"transcribe step failed: {type(e).__name__}: {e}")
 
-            log.info("Step 3: Generating candidate highlights (A/B tested)...")
-            candidates = self.profiler.profile(
-                _get_highlights_ab, segments, campaign_id, campaign_name,
-                num_clips=num_clips, use_llm=use_llm,
-                client=self.llm_client, model=self.llm_model,
-                llm_client=self.llm_client,
-                step_name="highlight",
-            )
+            try:
+                log.info("Step 3: Generating candidate highlights (A/B tested)...")
+                candidates = self.profiler.profile(
+                    _get_highlights_ab, segments, campaign_id, campaign_name,
+                    num_clips=num_clips, use_llm=use_llm,
+                    client=self.llm_client, model=self.llm_model,
+                    llm_client=self.llm_client,
+                    step_name="highlight",
+                )
+            except Exception as e:
+                raise ClipError(f"highlight step failed: {type(e).__name__}: {e}")
 
             candidates = _deduplicate(candidates, num_clips)
             log.info(f"Generated {len(candidates)} candidate highlights")
 
-            log.info("Step 4: Rendering clips...")
-            clips = self.profiler.profile(
-                _render_clips, video_path, segments, candidates,
-                campaign_output, num_clips=num_clips,
-                step_name="render",
-            )
+            try:
+                log.info("Step 4: Rendering clips...")
+                clips = self.profiler.profile(
+                    _render_clips, video_path, segments, candidates,
+                    campaign_output, num_clips=num_clips,
+                    step_name="render",
+                )
+            except Exception as e:
+                raise ClipError(f"render step failed: {type(e).__name__}: {e}")
 
             log.info("Step 5: Submitting to Content Rewards via n8n...")
             manifest = {
