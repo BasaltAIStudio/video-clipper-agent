@@ -166,6 +166,16 @@ def get_clip(name: str):
     return FileResponse(str(path), media_type="video/mp4", filename=safe)
 
 
+@app.get("/api/debug")
+def api_debug() -> Dict[str, Any]:
+    """Diagnostic endpoint to verify basic request handling works."""
+    return {
+        "status": "ok",
+        "output_dir": str(cfg.OUTPUT_DIR),
+        "output_dir_exists": cfg.OUTPUT_DIR.exists(),
+        "output_dir_writable": os.access(cfg.OUTPUT_DIR, os.W_OK),
+    }
+
 @app.post("/api/upload")
 def upload_clip(file: UploadFile = File(...)):
     """Process a locally-uploaded video file (no YouTube download needed).
