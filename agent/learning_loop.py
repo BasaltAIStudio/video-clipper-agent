@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 """
 Learning Loop — tracks clip performance and uses it to improve future video selection.
 
