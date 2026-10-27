@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict
@@ -175,6 +176,44 @@ def api_debug() -> Dict[str, Any]:
         "output_dir_exists": cfg.OUTPUT_DIR.exists(),
         "output_dir_writable": os.access(cfg.OUTPUT_DIR, os.W_OK),
     }
+
+@app.get("/api/debug/model")
+def api_debug_model() -> Dict[str, Any]:
+    """Test if faster-whisper model loads on Render."""
+    try:
+        from faster_whisper import WhisperModel
+        model = WhisperModel("tiny", device="auto", compute_type="auto")
+        return {"status": "ok", "model_loaded": True}
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {e}"}
+
+@app.get("/api/debug/av")
+def api_debug_av() -> Dict[str, Any]:
+    """Test if PyAV/av works on Render."""
+    try:
+        import av
+        return {
+            "status": "ok",
+            "av_version": getattr(av, "__version__", "unknown"),
+            "has_codec": av.codec is not None,
+            "has_container": av.container is not None,
+        }
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {e}"}
+
+@app.get("/api/debug/ffmpeg")
+def api_debug_ffmpeg() -> Dict[str, Any]:
+    """Test if ffmpeg CLI works on Render."""
+    try:
+        result = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=10)
+        return {
+            "status": "ok" if result.returncode == 0 else "error",
+            "returncode": result.returncode,
+            "version": result.stdout.split("\n")[0] if result.stdout else "",
+            "stderr": result.stderr[:200] if result.stderr else "",
+        }
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {e}"}
 
 @app.post("/api/upload-test")
 def upload_test(file: UploadFile = File(...)) -> Dict[str, Any]:
