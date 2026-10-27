@@ -176,6 +176,16 @@ def api_debug() -> Dict[str, Any]:
         "output_dir_writable": os.access(cfg.OUTPUT_DIR, os.W_OK),
     }
 
+@app.post("/api/upload-test")
+def upload_test(file: UploadFile = File(...)) -> Dict[str, Any]:
+    """Minimal upload test - just returns file info, no pipeline."""
+    content = file.file.read()
+    return {
+        "filename": file.filename,
+        "size": len(content),
+        "content_type": file.content_type,
+    }
+
 @app.post("/api/upload")
 def upload_clip(file: UploadFile = File(...)):
     """Process a locally-uploaded video file (no YouTube download needed).
