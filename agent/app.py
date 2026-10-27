@@ -204,9 +204,13 @@ def upload_clip(file: UploadFile = File(...)):
 
         # Save to a working directory
         tmp = tempfile.mkdtemp(dir=cfg.OUTPUT_DIR)
+        log.info(f"upload: created tmp dir {tmp}")
         video_path = Path(tmp) / file.filename
+        content = file.file.read()
+        log.info(f"upload: read {len(content)} bytes from {file.filename}")
         with open(video_path, "wb") as f:
-            f.write(file.file.read())
+            f.write(content)
+        log.info(f"upload: saved to {video_path}")
 
         campaign_id = str(uuid.uuid4())
         campaign_name = f"upload_{campaign_id[:8]}"
@@ -220,6 +224,7 @@ def upload_clip(file: UploadFile = File(...)):
             model_size="tiny",
             chunked=True,
         )
+        log.info(f"upload: pipeline returned result type={type(result).__name__}")
     except ClipPipelineError as e:
         log.error("upload pipeline failed: %s", e)
         raise HTTPException(status_code=502, detail=f"upload failed: {e}")
@@ -229,18 +234,23 @@ def upload_clip(file: UploadFile = File(...)):
         log.exception("unexpected upload error")
         raise HTTPException(status_code=500, detail=f"upload failed: {type(e).__name__}: {e}")
 
-    manifest: Dict[str, Any] = {
-        "job_id": os.getenv("AGENT_JOB_ID", "unknown"),
-        "campaign_id": campaign_id,
-        "campaign_name": campaign_name,
-        "youtube_url": None,
-        "uploaded_file": file.filename,
-        "status": "completed",
-        "num_clips": len(result.get("manifest", {}).get("clips", [])),
-        "duration": result.get("manifest", {}).get("transcript_duration", 0.0),
-        "clips": result.get("manifest", {}).get("clips", []),
-        "took_seconds": round(time.time() - started, 3),
-    }
+    try:
+        manifest_result = result.get("manifest", {}) if result else {}
+        manifest: Dict[str, Any] = {
+            "job_id": os.getenv("AGENT_JOB_ID", "unknown"),
+            "campaign_id": campaign_id,
+            "campaign_name": campaign_name,
+            "youtube_url": None,
+            "uploaded_file": file.filename,
+            "status": "completed",
+            "num_clips": len(manifest_result.get("clips", [])),
+            "duration": manifest_result.get("transcript_duration", 0.0),
+            "clips": manifest_result.get("clips", []),
+            "took_seconds": round(time.time() - started, 3),
+        }
+    except Exception as e:
+        log.exception("manifest construction failed")
+        raise HTTPException(status_code=500, detail=f"manifest failed: {type(e).__name__}: {e}")
 
     log.info("upload complete: %s -> %d clips in %.1fs", file.filename, len(manifest["clips"]), manifest["took_seconds"])
     return JSONResponse(content=manifest)
