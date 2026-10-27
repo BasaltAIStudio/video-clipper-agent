@@ -740,10 +740,12 @@ class DecisionEngine:
                 "clips_dir": str(campaign_output),
             }
 
+        except ClipPipelineError:
+            raise
         except Exception as e:
             stats.record_run(success=False, duration=time.time() - start_time, error=str(e))
-            log.error(f"DecisionEngine failed: {e}")
-            raise
+            log.error(f"DecisionEngine failed: {type(e).__name__}: {e}")
+            raise ClipError(f"pipeline failed at {type(e).__name__}: {e}")
         finally:
             if download_dir and download_dir.exists():
                 shutil.rmtree(download_dir, ignore_errors=True)
