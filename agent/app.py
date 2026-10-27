@@ -215,7 +215,7 @@ def upload_clip(file: UploadFile = File(...)):
         raise HTTPException(status_code=502, detail=f"upload failed: {e}")
     except Exception as e:
         log.exception("unexpected upload error")
-        raise HTTPException(status_code=500, detail=f"upload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"upload failed: {type(e).__name__}: {e}")
 
     manifest: Dict[str, Any] = {
         "job_id": os.getenv("AGENT_JOB_ID", "unknown"),
