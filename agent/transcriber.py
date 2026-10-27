@@ -18,6 +18,8 @@ import os
 import subprocess
 import tempfile
 import shutil  # Added for parallel transcribe
+import wave  # For reading WAV files extracted by ffmpeg
+import numpy as np  # For audio array processing
 
 import yt_dlp
 
@@ -185,6 +187,31 @@ def transcribe(
     return _transcribe_full(video_path, language, word_timestamps, model_size, use_cache)
 
 
+def _extract_audio_ffmpeg(video_path: Path) -> np.ndarray:
+    """Extract audio from video using ffmpeg command-line, return as numpy float32 array.
+
+    Bypasses PyAV entirely, which can fail on minimal container images due to
+    missing shared libraries or codec registration issues.
+    """
+    output_wav = str(video_path) + ".tmp.wav"
+    subprocess.run(
+        [
+            "ffmpeg", "-v", "error", "-i", str(video_path),
+            "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+            output_wav, "-y",
+        ],
+        capture_output=True,
+        timeout=120,
+        check=True,
+    )
+    with wave.open(output_wav, "rb") as wf:
+        n_frames = wf.getnframes()
+        raw_data = wf.readframes(n_frames)
+    audio = np.frombuffer(raw_data, dtype=np.int16).astype(np.float32) / 32768.0
+    Path(output_wav).unlink(missing_ok=True)
+    return audio
+
+
 def _transcribe_full(
     video_path: Path,
     language: Optional[str] = None,
@@ -199,8 +226,11 @@ def _transcribe_full(
 
     segments: List[dict] = []
 
+    # Extract audio via ffmpeg (avoids PyAV which can fail on minimal containers)
+    audio = _extract_audio_ffmpeg(video_path)
+
     generator, _info = model.transcribe(
-        str(video_path),
+        audio,
         language=language,
         word_timestamps=word_timestamps,
         vad_filter=True,
