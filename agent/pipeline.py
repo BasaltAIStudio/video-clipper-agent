@@ -571,18 +571,23 @@ class DecisionEngine:
             chunked: bool = True,
             work_dir: Path = None,
             poll_performance: bool = True,
+            skip_download: bool = False,
             **kwargs) -> dict:
         """
         Run the decision engine cycle with full profiling and feedback loop.
 
         Returns manifest with clips and performance tracking data.
+
+        If skip_download is True, the url parameter is treated as a local
+        file path and the yt-dlp download step is skipped entirely.
         """
         self.profiler.start()
         stats = PipelineStats()
         start_time = time.time()
 
         log.info(f"DecisionEngine: url={url}, campaign={campaign_name}, "
-                 f"num_clips={num_clips}, use_llm={use_llm}, use_jev={use_jev}")
+                 f"num_clips={num_clips}, use_llm={use_llm}, use_jev={use_jev}, "
+                 f"skip_download={skip_download}")
 
         if work_dir is None:
             work_dir = Path("/tmp/video_agent") / f"campaign_{campaign_id}" / \
@@ -595,13 +600,19 @@ class DecisionEngine:
         video_path = None
         download_dir = None
         try:
-            log.info("Step 1: Downloading video...")
-            download_dir = work_dir / "download"
-            download_dir.mkdir(parents=True, exist_ok=True)
-            video_path = self.profiler.profile(
-                _download_video, url, download_dir,
-                step_name="download",
-            )
+            if skip_download:
+                log.info("Step 1: Skipping download (using local file)...")
+                video_path = Path(url)
+                if not video_path.exists():
+                    raise ClipError(f"Local video file not found: {url}")
+            else:
+                log.info("Step 1: Downloading video...")
+                download_dir = work_dir / "download"
+                download_dir.mkdir(parents=True, exist_ok=True)
+                video_path = self.profiler.profile(
+                    _download_video, url, download_dir,
+                    step_name="download",
+                )
 
             log.info("Step 2: Transcribing (parallel model load)...")
             info = self.profiler.profile(
@@ -968,5 +979,6 @@ def process_local_video(
         model_size=model_size,
         chunked=chunked,
         poll_performance=False,
+        skip_download=True,
         **kwargs,
     )
