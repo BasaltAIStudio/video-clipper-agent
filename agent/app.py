@@ -200,14 +200,14 @@ def upload_clip(file: UploadFile = File(...)):
 
     Returns: JSON manifest (same shape as /api/clip response).
     """
-    from .clipper import ClipError as ClipPipelineError
-    from .pipeline import process_local_video
-    import os
-    import uuid
-    import tempfile
-
-    started = time.time()
     try:
+        from .clipper import ClipError as ClipPipelineError
+        from .pipeline import process_local_video
+        import os
+        import uuid
+        import tempfile
+
+        started = time.time()
         ext = Path(file.filename or "").suffix.lower()
         if ext not in (".mp4", ".m4v", ".mov", ".avi", ".mkv"):
             raise HTTPException(status_code=400, detail=f"unsupported video extension: {ext}")
