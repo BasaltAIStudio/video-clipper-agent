@@ -225,6 +225,45 @@ def upload_test(file: UploadFile = File(...)) -> Dict[str, Any]:
         "content_type": file.content_type,
     }
 
+@app.get("/api/debug/pipeline")
+def api_debug_pipeline() -> Dict[str, Any]:
+    """Run each pipeline step individually to find which one fails."""
+    results = {}
+    video_path = Path("/c/Users/lenovo/video-agent/clips-studio/assets/outro/outro2_1080x1920_30_yuv420p_48000_2.mp4")
+
+    # Step 1: Model loading
+    try:
+        from agent.transcriber import get_model
+        model = get_model("tiny")
+        results["model"] = "ok"
+    except Exception as e:
+        results["model"] = f"error: {type(e).__name__}: {e}"
+        return results
+
+    # Step 2: Audio extraction via ffmpeg
+    try:
+        from agent.transcriber import _extract_audio_ffmpeg
+        audio = _extract_audio_ffmpeg(video_path)
+        results["audio_extract"] = f"ok (shape={audio.shape}, len={len(audio)})"
+    except Exception as e:
+        results["audio_extract"] = f"error: {type(e).__name__}: {e}"
+        return results
+
+    # Step 3: Transcription with numpy array
+    try:
+        generator, info = model.transcribe(
+            audio, language="en", word_timestamps=True,
+            vad_filter=True, beam_size=5,
+        )
+        segments = list(generator)
+        results["transcribe"] = f"ok ({len(segments)} segments)"
+    except Exception as e:
+        results["transcribe"] = f"error: {type(e).__name__}: {e}"
+        return results
+
+    results["all_steps"] = "ok"
+    return results
+
 @app.post("/api/upload")
 def upload_clip(file: UploadFile = File(...)):
     """Process a locally-uploaded video file (no YouTube download needed).
@@ -280,7 +319,10 @@ def upload_clip(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"upload failed: {type(e).__name__}: {e}")
+        import traceback
+        tb = traceback.format_exc()
+        log.error("unexpected upload error:\n%s", tb)
+        raise HTTPException(status_code=500, detail=f"upload failed: {type(e).__name__}: {e}\n{tb[:500]}")
 
     try:
         manifest_result = result.get("manifest", {}) if result else {}
