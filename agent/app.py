@@ -206,7 +206,7 @@ def upload_clip(file: UploadFile = File(...)):
             work_dir=Path(tmp),
             campaign_id=campaign_id,
             campaign_name=campaign_name,
-            num_clips=int(payload.get("num_clips", cfg.DEFAULT_NUM_CLIPS)),
+            num_clips=cfg.DEFAULT_NUM_CLIPS,
             model_size="tiny",
             chunked=True,
         )
