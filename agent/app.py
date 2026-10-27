@@ -241,7 +241,6 @@ def upload_clip(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        log.exception("unexpected upload error")
         raise HTTPException(status_code=500, detail=f"upload failed: {type(e).__name__}: {e}")
 
     try:
