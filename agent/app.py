@@ -184,23 +184,23 @@ def upload_clip(file: UploadFile = File(...)):
     from .pipeline import process_local_video
     import os
     import uuid
-
-    ext = Path(file.filename or "").suffix.lower()
-    if ext not in (".mp4", ".m4v", ".mov", ".avi", ".mkv"):
-        raise HTTPException(status_code=400, detail=f"unsupported video extension: {ext}")
-
-    # Save to a working directory
     import tempfile
-    tmp = tempfile.mkdtemp(dir=cfg.OUTPUT_DIR)
-    video_path = Path(tmp) / file.filename
-    with open(video_path, "wb") as f:
-        f.write(file.file.read())
-
-    campaign_id = str(uuid.uuid4())
-    campaign_name = f"upload_{campaign_id[:8]}"
 
     started = time.time()
     try:
+        ext = Path(file.filename or "").suffix.lower()
+        if ext not in (".mp4", ".m4v", ".mov", ".avi", ".mkv"):
+            raise HTTPException(status_code=400, detail=f"unsupported video extension: {ext}")
+
+        # Save to a working directory
+        tmp = tempfile.mkdtemp(dir=cfg.OUTPUT_DIR)
+        video_path = Path(tmp) / file.filename
+        with open(video_path, "wb") as f:
+            f.write(file.file.read())
+
+        campaign_id = str(uuid.uuid4())
+        campaign_name = f"upload_{campaign_id[:8]}"
+
         result = process_local_video(
             video_path=video_path,
             work_dir=Path(tmp),
@@ -213,6 +213,8 @@ def upload_clip(file: UploadFile = File(...)):
     except ClipPipelineError as e:
         log.error("upload pipeline failed: %s", e)
         raise HTTPException(status_code=502, detail=f"upload failed: {e}")
+    except HTTPException:
+        raise
     except Exception as e:
         log.exception("unexpected upload error")
         raise HTTPException(status_code=500, detail=f"upload failed: {type(e).__name__}: {e}")
@@ -224,9 +226,9 @@ def upload_clip(file: UploadFile = File(...)):
         "youtube_url": None,
         "uploaded_file": file.filename,
         "status": "completed",
-        "num_clips": len(result.get("clips", [])),
-        "duration": result.get("transcript_duration", 0.0),
-        "clips": result.get("clips", []),
+        "num_clips": len(result.get("manifest", {}).get("clips", [])),
+        "duration": result.get("manifest", {}).get("transcript_duration", 0.0),
+        "clips": result.get("manifest", {}).get("clips", []),
         "took_seconds": round(time.time() - started, 3),
     }
 
