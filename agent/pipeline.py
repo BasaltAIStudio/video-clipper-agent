@@ -289,7 +289,7 @@ def _download_video(url: str, work_dir: Path, max_duration: int = 600) -> Path:
         log.info(f"Downloading video (max {max_duration}s, 1080p): {url}")
     ydl_opts = {
         'outtmpl': str(work_dir / 'source_video.%(ext)s'),
-        'format': 'best[height<=1080]/best',
+        'format': 'bestvideo+bestaudio/best',
         'merge_output_format': 'mp4',
         'quiet': True,
         'noprogress': True,
