@@ -24,7 +24,7 @@ logging.basicConfig(
 log = logging.getLogger("agent.run")
 
 
-def one_shot(url: str, *, num_clips: int, aspect: str, use_llm: bool = True, use_jev: bool = False) -> None:
+def one_shot(url: str, *, num_clips: int, aspect: str, use_llm: bool = True, use_jev: bool = False) -> dict:
     cfg.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     try:
         result = run_decision_engine(
@@ -39,18 +39,20 @@ def one_shot(url: str, *, num_clips: int, aspect: str, use_llm: bool = True, use
     except Exception as e:  # noqa: BLE001
         log.error("CLIP FAILED: %s", e)
         sys.exit(1)
+    manifest = result.get("manifest", {})
     print("\n" + "=" * 72)
     print("Source: %s" % url)
-    print("Duration: %.0fs" % result.get("duration", 0.0))
-    print("Highlights: %d candidates" % len(result.get("highlights", [])))
+    print("Duration: %.0fs" % manifest.get("transcript_duration", 0.0))
+    print("Highlights: %d generated" % len(result.get("candidates", [])))
     print("=" * 72)
-    for c in result.get("clips", []):
-        print("  #%d  [%.0fs -> %.0fs] score=%d" % (c["index"], c["start"], c["end"], c["score"]))
-        print("      %s | hook: %s" % (c["title"], c["hook_sentence"][:90]))
+    for c in manifest.get("clips", []):
+        print("  #%d  [%.0fs -> %.0fs] score=%s" % (c.get("index", 0), c["start"], c["end"], c.get("score", 0)))
+        print("      %s | hook: %s" % (c.get("file_name", ""), c.get("text", "")[:90]))
     print("=" * 72)
     print("Artifacts in %s:" % cfg.OUTPUT_DIR)
     for p in sorted(cfg.OUTPUT_DIR.iterdir()):
         print("  ", p.name, p.stat().st_size, "bytes")
+    return result
 
 
 def main() -> int:
@@ -95,21 +97,22 @@ def main() -> int:
     if args.once:
         if not args.url:
             ap.error("either provide a URL or use --once with a URL")
-        one_shot(args.url, num_clips=args.num_clips, aspect=args.aspect, use_llm=not args.no_llm, use_jev=args.use_jev)
-        if args.stats:
-            from .config import stats
-            s = stats.get_summary()
+        result = one_shot(args.url, num_clips=args.num_clips, aspect=args.aspect, use_llm=not args.no_llm, use_jev=args.use_jev)
+        if args.stats and result:
+            s = result.get("stats", {})
+            if hasattr(s, "get_summary"):
+                s = s.get_summary()
             print("\n" + "=" * 72)
             print("PIPELINE STATISTICS")
             print("=" * 72)
-            print("Total runs:        %d" % s["total_runs"])
-            print("Successful runs:   %d" % s["successful_runs"])
-            print("Failed runs:       %d" % s["failed_runs"])
-            print("Success rate:      %.1f%%" % s["success_rate"])
-            print("Avg duration:      %.1fs" % s["avg_duration"])
-            print("Last run:          %.1fs" % s["last_run_duration"])
-            print("Last campaign:     %s" % s["last_campaign_id"])
-            print("Last LLM provider: %s" % s["last_llm_provider"])
+            print("Total runs:        %s" % s.get("total_runs", "N/A"))
+            print("Successful runs:   %s" % s.get("successful_runs", "N/A"))
+            print("Failed runs:       %s" % s.get("failed_runs", "N/A"))
+            print("Success rate:      %s%%" % s.get("success_rate", "N/A"))
+            print("Avg duration:      %ss" % s.get("avg_duration", "N/A"))
+            print("Last run:          %ss" % s.get("last_run_duration", "N/A"))
+            print("Last campaign:     %s" % s.get("last_campaign_id", "N/A"))
+            print("Last LLM provider: %s" % s.get("last_llm_provider", "N/A"))
             print("=" * 72 + "\n")
         return 0
 

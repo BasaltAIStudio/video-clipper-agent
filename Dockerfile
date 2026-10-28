@@ -51,7 +51,7 @@ ENV AGENT_DATA_DIR=/tmp/video_agent_data \
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD curl -fsS http://localhost:8000/health >/dev/null || exit 1
+    CMD curl -fsS http://localhost:${PORT:-8000}/health >/dev/null || exit 1
 
 # The agent package uses relative imports, so run as `python -m agent.run`
 CMD ["python", "-m", "agent.run"]

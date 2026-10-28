@@ -19,7 +19,6 @@ WORK_DIR = Path(os.getenv("AGENT_WORK_DIR", "/app/work")).resolve()
 OUTPUT_DIR = Path(os.getenv("AGENT_OUTPUT_DIR", "/app/output")).resolve()
 UPLOAD_DIR = Path(os.getenv("AGENT_UPLOAD_DIR", "/app/uploads")).resolve()
 MAX_WORK_DIR_BYTES = int(os.getenv("AGENT_MAX_WORK_DIR_BYTES", str(4 * 1024 * 1024 * 1024)))
-MAX_VIDEO_SECONDS = int(os.getenv("AGENT_MAX_VIDEO_SECONDS", "7200"))  # guard hard cap
 
 # Writable scratch/state dir. The container user (nobody) has no home dir, so
 # never use Path.home().
@@ -62,7 +61,7 @@ USE_LLM = LLM_PROVIDER != "none"
 
 # Transcription: tiny = fastest (default for campaign clipping), small = better
 # accuracy but slower. Campaign-linked clips should be fast, so tiny is the
-# production default. Override locally with: LOCAL_WHISPER_MODEL=small
+# production default. Override locally with: LOCAL_WHISPER_MODEL=base
 LOCAL_WHISPER_MODEL = os.getenv("LOCAL_WHISPER_MODEL", "tiny")
 LOCAL_WHISPER_DEVICE = os.getenv("LOCAL_WHISPER_DEVICE", "auto")
 LOCAL_WHISPER_COMPUTE_TYPE = os.getenv("LOCAL_WHISPER_COMPUTE_TYPE", "auto")
@@ -78,24 +77,15 @@ FFPROBE_BINARY = os.getenv("FFPROBE_BINARY", "ffprobe")
 DEFAULT_ASPECT = os.getenv("DEFAULT_ASPECT", "9:16")  # 9:16 vertical short
 TARGET_WIDTH = int(os.getenv("TARGET_WIDTH", "1080"))
 
-# Campaign-linked clips: short-form, fast turnaround. Videos longer than this
-# are truncated to this duration before processing (speed/quality safeguard).
-MAX_CLIP_DURATION = float(os.getenv("MAX_CLIP_DURATION", "180.0"))
-
 # Idempotency cache directory for submitted clip tracking
 AGENT_CACHE_DIR = Path(os.getenv("AGENT_CACHE_DIR", "/app/cache")).resolve()
-
-# Campaign-linked clips: short-form, fast turnaround. Videos longer than this
-# are truncated to this duration before processing (speed/quality safeguard).
-# Tested video: 36:18 — a full 2-hour VOD takes 10+ minutes to transcribe.
-# Limit: 60 minutes (enough for 3-4 15-sec campaign hooks).
-MAX_VIDEO_SECONDS = int(os.getenv("AGENT_MAX_VIDEO_SECONDS", "3600"))
 
 # Limits
 DEFAULT_NUM_CLIPS = int(os.getenv("DEFAULT_NUM_CLIPS", "3"))
 MAX_NUM_CLIPS = int(os.getenv("MAX_NUM_CLIPS", "10"))
 MIN_CLIP_DURATION = float(os.getenv("MIN_CLIP_DURATION", "15.0"))
 MAX_CLIP_DURATION = float(os.getenv("MAX_CLIP_DURATION", "180.0"))
+MAX_VIDEO_SECONDS = int(os.getenv("AGENT_MAX_VIDEO_SECONDS", "3600"))
 
 # Campaign / n8n integration
 CAMPAIGN_WEBHOOK_URL = os.getenv("CAMPAIGN_WEBHOOK_URL", "https://contentrewards.com/webhook/analytics")

@@ -936,20 +936,41 @@ class DecisionLoop:
         log.info("DecisionLoop stopped")
 
 
-        stats = PipelineStats()
-        engine.run(
-            url=url,
-            campaign_id=campaign_id,
-            campaign_name=campaign_name,
-            num_clips=num_clips,
-            use_llm=use_llm,
-            use_jev=use_jev,
-            use_heuristic=use_heuristic,
-            model_size=model_size,
-            chunked=chunked,
-            **kwargs,
-        )
-        return stats.get_summary()
+def run_decision_engine(
+    url: str,
+    n8n_url: str,
+    campaign_id: str,
+    campaign_name: str,
+    cache: IdempotencyCache = None,
+    num_clips: int = DEFAULT_NUM_CLIPS,
+    use_llm: bool = True,
+    use_jev: bool = False,
+    use_heuristic: bool = True,
+    model_size: str = "tiny",
+    chunked: bool = True,
+    **kwargs,
+) -> dict:
+    engine = DecisionEngine(
+        n8n_url=n8n_url,
+        cache=cache,
+        perf_recorder=PerformanceRecorder(),
+        highlight_selector=UnifiedHighlightSelector(),
+        llm_client=kwargs.get("client"),
+        llm_model=kwargs.get("model"),
+        output_dir=kwargs.get("output_dir"),
+    )
+    return engine.run(
+        url=url,
+        campaign_id=campaign_id,
+        campaign_name=campaign_name,
+        num_clips=num_clips,
+        use_llm=use_llm,
+        use_jev=use_jev,
+        use_heuristic=use_heuristic,
+        model_size=model_size,
+        chunked=chunked,
+        **kwargs,
+    )
 
 
 def process_local_video(

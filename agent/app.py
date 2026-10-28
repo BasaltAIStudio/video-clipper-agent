@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
-from fastapi import FastAPI, HTTPException, File, UploadFile
+from fastapi import FastAPI, HTTPException, File, UploadFile, Request
 from fastapi.responses import JSONResponse
 
 from . import config as cfg
@@ -265,7 +265,7 @@ def api_debug_pipeline() -> Dict[str, Any]:
     return results
 
 @app.post("/api/upload")
-def upload_clip(file: UploadFile = File(...)):
+async def upload_clip(request: Request, file: UploadFile = File(None)):
     """Process a locally-uploaded video file (no YouTube download needed).
 
     Accepts a multipart/form-data upload with a single 'file' field containing
@@ -278,6 +278,76 @@ def upload_clip(file: UploadFile = File(...)):
 
     Returns: JSON manifest (same shape as /api/clip response).
     """
+    import json as _json
+    import uuid as _uuid
+
+    # Check if JSON body with youtube_url was sent
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+            youtube_url = (body.get("youtube_url") or "").strip()
+            campaign_id = body.get("campaign_id")
+            campaign_name = body.get("campaign_name", "unknown")
+            num_clips = int(body.get("num_clips", cfg.DEFAULT_NUM_CLIPS))
+
+            if youtube_url:
+                from .clipper import ClipError as ClipPipelineError
+                from .pipeline import run_decision_engine
+                import os
+
+                if not campaign_id:
+                    campaign_id = str(_uuid.uuid4())
+                if not campaign_name:
+                    campaign_name = "unknown"
+
+                num_clips = min(max(num_clips, 1), cfg.MAX_NUM_CLIPS)
+
+                started = time.time()
+                try:
+                    result = run_decision_engine(
+                        url=youtube_url,
+                        n8n_url="",
+                        campaign_id=campaign_id,
+                        campaign_name=campaign_name,
+                        num_clips=num_clips,
+                        use_llm=cfg.USE_LLM,
+                        use_heuristic=not cfg.USE_LLM,
+                        model_size="tiny",
+                        chunked=True,
+                        poll_performance=False,
+                    )
+                except ClipPipelineError as e:
+                    log.error("clip pipeline failed for %s: %s", youtube_url, e)
+                    raise HTTPException(status_code=502, detail=f"clipping failed: {e}")
+                except Exception as e:
+                    log.exception("unexpected error clipping %s", youtube_url)
+                    raise HTTPException(status_code=500, detail=f"unexpected error: {e}")
+
+                manifest: Dict[str, Any] = {
+                    "job_id": os.getenv("AGENT_JOB_ID", "unknown"),
+                    "campaign_id": campaign_id,
+                    "campaign_name": campaign_name,
+                    "youtube_url": youtube_url,
+                    "status": "completed",
+                    "num_clips": len(result["manifest"].get("clips", [])),
+                    "duration": result["manifest"].get("transcript_duration", 0.0),
+                    "clips": result["manifest"].get("clips", []),
+                    "took_seconds": round(time.time() - started, 3),
+                }
+                log.info("clip complete: %s -> %d clips in %.1fs", youtube_url, len(manifest["clips"]), manifest["took_seconds"])
+                return JSONResponse(content=manifest)
+        except Exception:
+            pass
+
+    # If no JSON body or no youtube_url, expect a file upload
+    if file is None or not file.filename:
+        raise HTTPException(
+            status_code=400,
+            detail="No file or youtube_url provided. Upload a video file or send JSON with 'youtube_url'."
+        )
+
+    # Original file upload logic continues below
     try:
         from .clipper import ClipError as ClipPipelineError
         from .pipeline import process_local_video
