@@ -24,7 +24,7 @@ export default workflow('video-agent-campaign-pipeline', 'Video Agent Campaign P
     }
   }))
   .add(ifElse({
-    version: 2.2,
+    version: 2.3,
     config: {
       name: 'Check Campaigns',
       parameters: {
@@ -66,15 +66,29 @@ export default workflow('video-agent-campaign-pipeline', 'Video Agent Campaign P
               }
             }
           }
-        }))
+        })),
+      node({
+        type: 'n8n-nodes-base.httpRequest',
+        version: 4.3,
+        config: {
+          name: 'Get Assigned Video',
+          parameters: {
+            method: 'GET',
+            url: '{{ $json[0].videoUrl }}'
+          }
+        }
+      })
         .to(node({
-          type: 'n8n-nodes-base.httpRequest',
-          version: 4.3,
+          type: 'n8n-nodes-base.code',
+          version: 1.1,
           config: {
-            name: 'Get Assigned Video',
+            name: 'Prepare Clip Request',
             parameters: {
-              method: 'GET',
-              url: '{{ $json[0].videoUrl }}'
+              mode: 'runOnceForAllItems',
+              language: 'javaScript',
+              jsCode: `const d = $input.first().json.output || {};
+if (!d.selected || !d.campaign_id || !d.source_video_url) return [];
+return [{ json: { campaignId: d.campaign_id, campaignName: d.campaign_name, sourceVideoUrl: d.source_video_url, numClips: 3, selection_reason: d.reason || '' } }];`
             }
           }
         }))
@@ -87,28 +101,30 @@ export default workflow('video-agent-campaign-pipeline', 'Video Agent Campaign P
               method: 'POST',
               url: 'https://video-clipper-agent-wx2yn.us-east-1.migetapp.com/api/clip',
               options: {
-                timeout: 300,
+                timeout: 600000,
                 maxTries: 3
               },
               parameters: {
                 json: {
-                  youtube_url: '{{ $json[0].sourceVideoUrl }}',
-                  campaign_id: '{{ $json[0].campaignId }}',
-                  campaign_name: '{{ $json[0].campaignName }}',
-                  num_clips: '{{ $json[0].numClips }}'
+                  youtube_url: '{{ $json.sourceVideoUrl }}',
+                  campaign_id: '{{ $json.campaignId }}',
+                  campaign_name: '{{ $json.campaignName }}',
+                  num_clips: '{{ $json.numClips }}',
+                  aspect: '9:16',
+                  submit: false
                 }
               }
             }
           }
         }))
         .to(node({
-          type: 'n8n-nodes-base.code',
-          version: 1.1,
+          type: 'n8n-nodes-base.wait',
+          version: 2.1,
           config: {
-            name: 'Enhance Clips',
+            name: 'Wait for Clipper',
             parameters: {
-              mode: 'code',
-              code: '/* Apply viral formulas: add captions, background music/sound, thumbnail styling, framing. Replace placeholder template logic with the agent pipeline feedback. */'
+              amount: 120,
+              unit: 'seconds'
             }
           }
         }))
@@ -116,32 +132,12 @@ export default workflow('video-agent-campaign-pipeline', 'Video Agent Campaign P
           type: 'n8n-nodes-base.httpRequest',
           version: 4.3,
           config: {
-            name: 'Post to Zernio',
-            parameters: {
-              method: 'POST',
-              url: 'https://zernio.com/api/v1/upload',
-              parameters: {
-                json: {
-                  youtubeUrl: '{{ $json[0].youtubeUrl }}',
-                  tiktokUrl: '{{ $json[0].tiktokUrl }}',
-                  apiKey: '{{ $env.ZERNIO_API_KEY }}'
-                }
-              }
-            }
-          }
-        }))
-        .to(node({
-          type: 'n8n-nodes-base.httpRequest',
-          version: 4.3,
-          config: {
-            name: 'Poll Analytics',
+            name: 'Poll Clipper Status',
             parameters: {
               method: 'GET',
-              url: 'https://zernio.com/api/v1/analytics',
-              parameters: {
-                json: {
-                  videoIds: '{{ $json[0].videoIds }}'
-                }
+              url: '={{ $json.job_id ? "https://video-clipper-agent-wx2yn.us-east-1.migetapp.com/api/status/" + $json.job_id : "" }}',
+              options: {
+                timeout: 30000
               }
             }
           }
@@ -149,12 +145,12 @@ export default workflow('video-agent-campaign-pipeline', 'Video Agent Campaign P
         .to(ifElse({
           version: 2.2,
           config: {
-            name: 'Check Threshold',
+            name: 'Check Job Status',
             parameters: {
               conditions: {
                 options: { caseSensitive: true, typeValidation: 'loose' },
                 conditions: [
-                  { leftValue: expr('{{ $json.views }}'), operator: { type: 'number', operation: 'greaterThanOrEqual' }, rightValue: expr('{{ $json.targetViews }}') }
+                  { leftValue: expr('{{ $json.status }}'), operator: { type: 'string', operation: 'equals' }, rightValue: 'completed' }
                 ],
                 combinator: 'and'
               }
@@ -163,47 +159,87 @@ export default workflow('video-agent-campaign-pipeline', 'Video Agent Campaign P
         }))
           .onTrue(
             node({
-              type: 'n8n-nodes-base.httpRequest',
-              version: 4.3,
-              config: {
-                name: 'Submit to Content Rewards',
-                parameters: {
-                  method: 'POST',
-                  url: '{{ $json.rewardsUrl }}',
-                  parameters: {
-                    json: {
-                      videoLink: '{{ $json[0].videoLink }}',
-                      accounts: ['youtube', 'tiktok'],
-                      campaignId: '{{ $json[0].campaignId }}'
-                    }
-                  }
-                }
-              }
-            })
-          )
-          .onFalse(
-            node({
               type: 'n8n-nodes-base.code',
               version: 1.1,
               config: {
-                name: 'Below Threshold',
+                name: 'Enhance Clips',
                 parameters: {
-                  mode: 'code',
-                  code: '/* No viral payout yet — return to campaign poll loop. */'
+                  mode: 'runOnceForAllItems',
+                  language: 'javaScript',
+                  jsCode: `const NL = String.fromCharCode(10);
+const out = [];
+for (const item of $input.all()) {
+  const r = item.json;
+  const result = r.result || r;
+  const clips = Array.isArray(result.clips) ? result.clips : [];
+  const campaignName = String(result.campaign_name || r.campaign_name || '');
+  for (const c of clips) {
+    const text = String(c.text || '').trim();
+    const hook = (text.split(/[.!?]/)[0] || campaignName || 'Watch this').trim().slice(0, 80);
+    const tags = ['#fyp', '#shorts', '#viral'];
+    const campaignTag = campaignName.replace(/[^a-zA-Z0-9]/g, '').toLowerCase().slice(0, 20);
+    if (campaignTag) tags.push('#' + campaignTag);
+    out.push({ json: {
+      campaign_id: result.campaign_id || r.campaign_id,
+      campaign_name: campaignName,
+      source: c,
+      duration: Number(c.duration || 0),
+      hook_title: hook,
+      tags: tags,
+      score: Number(c.score || 0),
+      transcript: text,
+      clip_url: c.clip_url || '',
+      thumbnail_url: c.thumbnail_url || ''
+    }});
+  }
+}
+return out;`
                 }
               }
-            })
-          )
+            }
+          }))
+            .to(node({
+              type: '@n8n/n8n-nodes-langchain.agent',
+              version: 2,
+              config: {
+                name: 'Clip Editor Agent',
+                parameters: {
+                  promptType: 'define',
+                  text: '=Campaign: {{ $json.campaign_name }}\nClip score: {{ $json.score }}\nDuration: {{ $json.duration }}s\nTranscript: {{ $json.transcript }}\nDraft hook: {{ $json.hook_title }}',
+                  hasOutputParser: true,
+                  options: {
+                    systemMessage: 'You are a short-form video editor. For one clip, decide whether it is worth posting (strong standalone hook, clear point, not misleading, no spam or engagement-bait), and write an original hook title (max 80 chars, no all-caps), a caption of one or two sentences without hashtags, and 3 to 4 relevant hashtags. Do not invent claims that are not in the transcript. Set post to false with a reason when the clip is weak.'
+                  }
+                }
+              }
+            }))
+            .to(node({
+              type: '@n8n/n8n-nodes-langchain.lmChatOpenAi',
+              version: 2,
+              config: {
+                name: 'Clip Editor Model',
+                parameters: {
+                  model: {
+                    __rl: true,
+                    mode: 'list',
+                    value: 'gpt-5-mini',
+                    cachedResultName: 'gpt-5-mini'
+                  }
+                }
+              }
+            })),
+        ))
     )
     .onFalse(
       node({
         type: 'n8n-nodes-base.code',
         version: 1.1,
         config: {
-          name: 'Log & Return',
+          name: 'No Campaigns',
           parameters: {
             mode: 'code',
-            code: '/* No pending campaigns — wait for next poll. */'
+            language: 'javaScript',
+            jsCode: 'return [{ json: { status: "no_campaigns", message: "No eligible campaigns found" } }];'
           }
         }
       })

@@ -11,7 +11,7 @@
     },
     {
       "parameters": {
-        "url": "{{{ $json.agent_url }}}/api/clip",
+        "url": "{{ $json.agent_url }}/api/clip",
         "method": "POST",
         "body": {
           "youtube_url": "{{ $json.youtube_url }}",

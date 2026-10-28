@@ -88,7 +88,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "{{{ $json.agent_url }}}",
+        "url": "{{ $json.agent_url }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -100,7 +100,7 @@
         },
         "body": {
           "json": true,
-          "raw": "{\\n  \"campaigns\": [{{{ $json._json }}}],\\n  \"agent_url\": \"{{{ $json.agent_url }}}\",\\n  \"submit\": true,\\n  \"campaign_webhook_url\": \"{{{ $json.campaign_webhook_url }}}\\n}"
+          "raw": "{\\n  \"campaigns\": [{{ $json._json }}],\\n  \"agent_url\": \"{{ $json.agent_url }}\",\\n  \"submit\": true,\\n  \"campaign_webhook_url\": \"{{ $json.campaign_webhook_url }}}\\n}"
         },
         "options": {
           "timeout": 60000
