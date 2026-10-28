@@ -272,28 +272,32 @@ class PerformanceRecorder:
 # Download + Transcribe (parallel model load)
 # ---------------------------------------------------------------------------
 
-def _download_video(url: str, work_dir: Path, max_duration: int = 60) -> Path:
+def _download_video(url: str, work_dir: Path, max_duration: int = 600) -> Path:
     """Download video using yt-dlp with cache.
 
-    Only downloads the first ``max_duration`` seconds of the source video.
-    This is critical for long videos (3+ min): downloading the entire file
-    can take 30-60s on its own, plus transcription scales linearly with
-    audio length. Capping at 60s keeps the full pipeline under ~90s.
+    Downloads the full video at 1080p (high quality) with speed optimizations:
+      - bestvideo[height<=1080] ensures highest quality up to 1080p
+      - concurrent_fragment_downloads=8 for parallel segment download
+      - download_ranges capped at max_duration (600s default) as safety valve
     """
-    cache_key = f"source_video_{url.split('v=')[-1].split('&')[0]}_{max_duration}s.mp4"
+    cache_key = f"source_video_{url.split('v=')[-1].split('&')[0]}.mp4"
     cache_file = work_dir / cache_key
     if cache_file.exists():
         log.info(f"Using cached video: {cache_file}")
         return cache_file
 
-    log.info(f"Downloading video (first {max_duration}s): {url}")
+    log.info(f"Downloading video (max {max_duration}s, 1080p): {url}")
     ydl_opts = {
         'outtmpl': str(work_dir / 'source_video.%(ext)s'),
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'format': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]',
         'merge_output_format': 'mp4',
         'quiet': True,
-        'download_ranges': lambda info, ydl: [(0, max_duration)],
+        'download_ranges': lambda info, ydl: [(0, max_duration)] if max_duration > 0 else None,
         'force_keyframes': True,
+        'concurrent_fragment_downloads': 8,
+        'noprogress': True,
+        'fragment_retries': 3,
+        'retries': 5,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
@@ -400,13 +404,13 @@ def _render_clips(
     min_duration: float = 15.0,
     max_duration: float = 180.0,
 ):
-    """Render clips from highlights using ffmpeg."""
+    """Render clips from highlights using ffmpeg (parallelized)."""
     log.info(f"Rendering {num_clips} clips from {video_path}...")
     clips = []
 
     sorted_highlights = sorted(highlights, key=lambda h: h.get('score', 0), reverse=True)
 
-    for i, hl in enumerate(sorted_highlights[:num_clips]):
+    def _render_one(i, hl):
         start = hl.get('start', 0)
         end = hl.get('end', start + 30)
         clip_duration = min(end - start, max_duration)
@@ -424,35 +428,39 @@ def _render_clips(
             if "Dialogue:" in ass_text:
                 ass_file.write_text(ass_text, encoding="utf-8")
                 seg = True
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log.warning("caption generation failed for clip %s: %s", i, e)
 
-        try:
-            render_clip(
-                source_path=video_path,
-                start=start,
-                end=start + clip_duration,
-                output_path=work_file,
-                aspect="9:16",
-                captions_ass=ass_file if seg else None,
-            )
-            clips.append({
-                "clip_id": f"{prefix}clip",
-                "start": start,
-                "end": start + clip_duration,
-                "duration": clip_duration,
-                "video_url": f"file://{work_file}",
-                "file_name": work_file.name,
-                "public_path": f"/clips/{work_file.name}",
-                "ass_url": f"file://{ass_file}",
-                "score": hl.get('score', 0),
-                "text": hl.get('text', ''),
-                "source_method": hl.get('source_method', 'unknown'),
-                "source_video": str(video_path),
-            })
-        except ClipError as e:
-            log.warning(f"Failed to render clip {i}: {e}")
-            continue
+        render_clip(
+            source_path=video_path,
+            start=start,
+            end=start + clip_duration,
+            output_path=work_file,
+            aspect="9:16",
+            captions_ass=ass_file if seg else None,
+        )
+        return {
+            "clip_id": f"{prefix}clip",
+            "start": start,
+            "end": start + clip_duration,
+            "duration": clip_duration,
+            "video_url": f"file://{work_file}",
+            "file_name": work_file.name,
+            "public_path": f"/clips/{work_file.name}",
+            "ass_url": f"file://{ass_file}",
+            "score": hl.get('score', 0),
+            "text": hl.get('text', ''),
+            "source_method": hl.get('source_method', 'unknown'),
+            "source_video": str(video_path),
+        }
+
+    with ThreadPoolExecutor(max_workers=min(num_clips, 4)) as pool:
+        futures = [pool.submit(_render_one, i, hl) for i, hl in enumerate(sorted_highlights[:num_clips])]
+        for f in futures:
+            try:
+                clips.append(f.result())
+            except ClipError as e:
+                log.warning(f"Failed to render clip: {e}")
 
     log.info(f"Rendered {len(clips)} clips")
     return clips

@@ -234,7 +234,7 @@ def _transcribe_full(
         language=language,
         word_timestamps=word_timestamps,
         vad_filter=True,
-        beam_size=5,
+        beam_size=1,  # greedy decoding for speed (production default)
     )
 
     for i, segment in enumerate(generator):

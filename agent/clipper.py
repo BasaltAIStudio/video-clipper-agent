@@ -93,10 +93,10 @@ def render_clip(
         esc = str(captions_ass).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
         vf_extra = f",subtitles='{esc}'"
 
-    crf, preset = ("28", "veryfast") if preview else ("23", "fast")
+    crf, preset = ("28", "ultrafast") if preview else ("23", "ultrafast")
 
     cmd = [
-        FFMPEG_BINARY, "-nostdin", "-filter_threads", "2", "-y",
+        FFMPEG_BINARY, "-nostdin", "-filter_threads", "4", "-y",
         "-ss", str(start),
         "-i", str(source_path),
         "-t", str(end - start),
