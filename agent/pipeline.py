@@ -302,7 +302,10 @@ def _download_video(url: str, work_dir: Path, max_duration: int = 600) -> Path:
         try:
             ydl.download([url])
         except Exception as e:
-            raise ClipError(f"Download failed: {e}")
+            import traceback as _tb
+            log.error(f"yt-dlp download error: {type(e).__name__}: {e}")
+            log.error(f"yt-dlp traceback: {_tb.format_exc()}")
+            raise ClipError(f"Download failed: {type(e).__name__}: {e}")
 
     for p in sorted(work_dir.glob("source_video.*")):
         if p.suffix.lower() in (".mp4", ".m4v"):
