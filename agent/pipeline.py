@@ -293,7 +293,6 @@ def _download_video(url: str, work_dir: Path, max_duration: int = 600) -> Path:
         'merge_output_format': 'mp4',
         'quiet': True,
         'download_ranges': lambda info, ydl: [(0, max_duration)] if max_duration > 0 else None,
-        'force_keyframes': True,
         'concurrent_fragment_downloads': 8,
         'noprogress': True,
         'fragment_retries': 3,
