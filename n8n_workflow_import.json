@@ -1,0 +1,213 @@
+{
+  "name": "Video Agent Campaign Pipeline",
+  "nodes": [
+    {
+      "name": "Campaign Poll",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300],
+      "parameters": {
+        "cron": "*/15 * * * *",
+        "timezone": "UTC"
+      }
+    },
+    {
+      "name": "Get Campaigns",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [450, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.campaignsApiUrl }}"
+      }
+    },
+    {
+      "name": "Check Campaigns",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [650, 300],
+      "parameters": {
+        "conditions": {
+          "options": {"caseSensitive": true, "typeValidation": "loose"},
+          "conditions": [
+            {"leftValue": "={{ $json }}", "operator": {"type": "array", "operation": "notEmpty"}}
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "name": "Get Campaign Details",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [850, 150],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json[0].detailsUrl }}"
+      }
+    },
+    {
+      "name": "Apply for Campaign",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1050, 150],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json[0].applyUrl }}",
+        "body": {
+          "agentId": "={{ $json[0].agentId }}",
+          "campaignId": "={{ $json[0].campaignId }}"
+        }
+      }
+    },
+    {
+      "name": "Get Assigned Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1250, 150],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json[0].videoUrl }}"
+      }
+    },
+    {
+      "name": "Run Clipper Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1450, 150],
+      "parameters": {
+        "method": "POST",
+        "url": "https://video-clipper-agent-wx2yn.us-east-1.migetapp.com/api/clip",
+        "options": {"timeout": 300, "maxTries": 3},
+        "body": {
+          "youtube_url": "={{ $json[0].sourceVideoUrl }}",
+          "campaign_id": "={{ $json[0].campaignId }}",
+          "campaign_name": "={{ $json[0].campaignName }}",
+          "num_clips": "={{ $json[0].numClips }}"
+        }
+      }
+    },
+    {
+      "name": "Enhance Clips",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1.1,
+      "position": [1650, 150],
+      "parameters": {
+        "mode": "code",
+        "jsCode": "/* Apply viral formulas: add captions, background music/sound, thumbnail styling, framing. */\nreturn items;"
+      }
+    },
+    {
+      "name": "Post to Zernio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1850, 150],
+      "parameters": {
+        "method": "POST",
+        "url": "https://zernio.com/api/v1/upload",
+        "body": {
+          "youtubeUrl": "={{ $json[0].youtubeUrl }}",
+          "tiktokUrl": "={{ $json[0].tiktokUrl }}",
+          "apiKey": "={{ $env.ZERNIO_API_KEY }}"
+        }
+      }
+    },
+    {
+      "name": "Poll Analytics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [2050, 150],
+      "parameters": {
+        "method": "GET",
+        "url": "https://zernio.com/api/v1/analytics",
+        "body": {
+          "videoIds": "={{ $json[0].videoIds }}"
+        }
+      }
+    },
+    {
+      "name": "Check Threshold",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2250, 150],
+      "parameters": {
+        "conditions": {
+          "options": {"caseSensitive": true, "typeValidation": "loose"},
+          "conditions": [
+            {"leftValue": "={{ $json.views }}", "operator": {"type": "number", "operation": "greaterThanOrEqual"}, "rightValue": "={{ $json.targetViews }}"}
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "name": "Submit to Content Rewards",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [2450, 100],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.rewardsUrl }}",
+        "body": {
+          "videoLink": "={{ $json[0].videoLink }}",
+          "accounts": ["youtube", "tiktok"],
+          "campaignId": "={{ $json[0].campaignId }}"
+        }
+      }
+    },
+    {
+      "name": "Below Threshold",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1.1,
+      "position": [2450, 200],
+      "parameters": {
+        "mode": "code",
+        "jsCode": "/* No viral payout yet — return to campaign poll loop. */\nreturn items;"
+      }
+    },
+    {
+      "name": "Log & Return",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1.1,
+      "position": [850, 300],
+      "parameters": {
+        "mode": "code",
+        "jsCode": "/* No pending campaigns — wait for next poll. */\nreturn items;"
+      }
+    }
+  ],
+  "connections": {
+    "Campaign Poll": {"main": [[{"node": "Get Campaigns", "type": "main", "index": 0}]]},
+    "Get Campaigns": {"main": [[{"node": "Check Campaigns", "type": "main", "index": 0}]]},
+    "Check Campaigns": {
+      "main": [
+        [{"node": "Get Campaign Details", "type": "main", "index": 0}],
+        [{"node": "Log & Return", "type": "main", "index": 0}]
+      ]
+    },
+    "Get Campaign Details": {"main": [[{"node": "Apply for Campaign", "type": "main", "index": 0}]]},
+    "Apply for Campaign": {"main": [[{"node": "Get Assigned Video", "type": "main", "index": 0}]]},
+    "Get Assigned Video": {"main": [[{"node": "Run Clipper Agent", "type": "main", "index": 0}]]},
+    "Run Clipper Agent": {"main": [[{"node": "Enhance Clips", "type": "main", "index": 0}]]},
+    "Enhance Clips": {"main": [[{"node": "Post to Zernio", "type": "main", "index": 0}]]},
+    "Post to Zernio": {"main": [[{"node": "Poll Analytics", "type": "main", "index": 0}]]},
+    "Poll Analytics": {"main": [[{"node": "Check Threshold", "type": "main", "index": 0}]]},
+    "Check Threshold": {
+      "main": [
+        [{"node": "Submit to Content Rewards", "type": "main", "index": 0}],
+        [{"node": "Below Threshold", "type": "main", "index": 0}]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "timezone": "UTC",
+    "executionTimeout": 3600,
+    "saveManualExecutions": true
+  },
+  "tags": [],
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "a518e57ab86df2be"
+  }
+}

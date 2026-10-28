@@ -1,8 +1,8 @@
-name: Keep-Alive Render Agent
+name: Keep-Alive Midget Agent
 
 on:
   # Ping the agent's /health endpoint every 10 min so the
-  # Render free tier (sleeps after 15 min of inactivity)
+  # Midget free tier (sleeps after 15 min of inactivity)
   # never has a chance to go to sleep.
   schedule:
     - cron: '*/10 * * * *'
@@ -12,5 +12,5 @@ jobs:
   keepalive:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Render health endpoint
-        run: curl -fsS https://video-clipper-agent-aju4.onrender.com/health
+      - name: Ping Midget health endpoint
+        run: curl -fsS https://video-clipper-agent-wx2yn.us-east-1.migetapp.com/health
