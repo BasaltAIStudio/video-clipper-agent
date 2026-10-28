@@ -21,6 +21,7 @@ from fastapi import FastAPI, HTTPException, File, UploadFile, Request, Backgroun
 from fastapi.responses import JSONResponse
 
 from . import config as cfg
+from .config import DEFAULT_MAX_DOWNLOAD_SECONDS
 
 log = logging.getLogger("agent.app")
 
@@ -69,6 +70,7 @@ def _process_clip_job(
     campaign_name: str,
     num_clips: int,
     submit: bool,
+    max_download_seconds: int = DEFAULT_MAX_DOWNLOAD_SECONDS,
 ) -> None:
     """Background task: run the full clip pipeline and store results in _job_store."""
     from .clipper import ClipError as ClipPipelineError
@@ -87,6 +89,7 @@ def _process_clip_job(
             model_size="tiny",
             chunked=True,
             poll_performance=False,
+            max_download_seconds=max_download_seconds,
         )
 
         manifest: Dict[str, Any] = {
@@ -155,6 +158,7 @@ def clip(payload: Dict[str, Any], background_tasks: BackgroundTasks) -> JSONResp
     campaign_id = payload.get("campaign_id") or str(_uuid.uuid4())
     campaign_name = payload.get("campaign_name", "unknown")
     submit = bool(payload.get("submit", False))
+    max_download_seconds = int(payload.get("max_download_seconds", DEFAULT_MAX_DOWNLOAD_SECONDS))
 
     job_id = str(_uuid.uuid4())
     with _job_lock:
@@ -172,6 +176,7 @@ def clip(payload: Dict[str, Any], background_tasks: BackgroundTasks) -> JSONResp
         campaign_name,
         num_clips,
         submit,
+        max_download_seconds,
     )
 
     log.info("job %s started: %s", job_id, youtube_url)
@@ -387,6 +392,7 @@ async def upload_clip(request: Request, file: UploadFile = File(None)):
                         model_size="tiny",
                         chunked=True,
                         poll_performance=False,
+                        max_download_seconds=int(body.get("max_download_seconds", DEFAULT_MAX_DOWNLOAD_SECONDS)),
                     )
                 except ClipPipelineError as e:
                     log.error("clip pipeline failed for %s: %s", youtube_url, e)

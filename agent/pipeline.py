@@ -36,7 +36,7 @@ from .boundary import adjust_window
 from .clipper import ClipError, render_clip, build_ass_subtitles
 from .config import (
     AGENT_CACHE_DIR, DATA_DIR, OUTPUT_DIR, DEFAULT_NUM_CLIPS, MAX_CLIP_DURATION, MAX_NUM_CLIPS,
-    logger_config, PROVIDER_ORDER, USE_LLM,
+    logger_config, PROVIDER_ORDER, USE_LLM, DEFAULT_MAX_DOWNLOAD_SECONDS,
 )
 from .jev_decision import ChoiceAnswer, JVEDecisionEngine
 from .heuristic import score_segments as score_all_segments
@@ -272,19 +272,28 @@ class PerformanceRecorder:
 # Download + Transcribe (parallel model load)
 # ---------------------------------------------------------------------------
 
-def _download_video(url: str, work_dir: Path) -> Path:
-    """Download video using yt-dlp with cache."""
-    cache_file = work_dir / "source_video.mp4"
+def _download_video(url: str, work_dir: Path, max_duration: int = 60) -> Path:
+    """Download video using yt-dlp with cache.
+
+    Only downloads the first ``max_duration`` seconds of the source video.
+    This is critical for long videos (3+ min): downloading the entire file
+    can take 30-60s on its own, plus transcription scales linearly with
+    audio length. Capping at 60s keeps the full pipeline under ~90s.
+    """
+    cache_key = f"source_video_{url.split('v=')[-1].split('&')[0]}_{max_duration}s.mp4"
+    cache_file = work_dir / cache_key
     if cache_file.exists():
         log.info(f"Using cached video: {cache_file}")
         return cache_file
 
-    log.info(f"Downloading video: {url}")
+    log.info(f"Downloading video (first {max_duration}s): {url}")
     ydl_opts = {
         'outtmpl': str(work_dir / 'source_video.%(ext)s'),
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'merge_output_format': 'mp4',
         'quiet': True,
+        'download_ranges': lambda info, ydl: [(0, max_duration)],
+        'force_keyframes': True,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
@@ -294,7 +303,6 @@ def _download_video(url: str, work_dir: Path) -> Path:
 
     for p in sorted(work_dir.glob("source_video.*")):
         if p.suffix.lower() in (".mp4", ".m4v"):
-            cache_file = work_dir / "source_video.mp4"
             if not cache_file.exists():
                 p.rename(cache_file)
             return cache_file
@@ -572,6 +580,7 @@ class DecisionEngine:
             work_dir: Path = None,
             poll_performance: bool = True,
             skip_download: bool = False,
+            max_download_seconds: int = DEFAULT_MAX_DOWNLOAD_SECONDS,
             **kwargs) -> dict:
         """
         Run the decision engine cycle with full profiling and feedback loop.
@@ -587,7 +596,7 @@ class DecisionEngine:
 
         log.info(f"DecisionEngine: url={url}, campaign={campaign_name}, "
                  f"num_clips={num_clips}, use_llm={use_llm}, use_jev={use_jev}, "
-                 f"skip_download={skip_download}")
+                 f"skip_download={skip_download}, max_download_seconds={max_download_seconds}")
 
         if work_dir is None:
             work_dir = Path("/tmp/video_agent") / f"campaign_{campaign_id}" / \
@@ -610,7 +619,7 @@ class DecisionEngine:
                 download_dir = work_dir / "download"
                 download_dir.mkdir(parents=True, exist_ok=True)
                 video_path = self.profiler.profile(
-                    _download_video, url, download_dir,
+                    _download_video, url, download_dir, max_duration=max_download_seconds,
                     step_name="download",
                 )
 
@@ -948,6 +957,7 @@ def run_decision_engine(
     use_heuristic: bool = True,
     model_size: str = "tiny",
     chunked: bool = True,
+    max_download_seconds: int = DEFAULT_MAX_DOWNLOAD_SECONDS,
     **kwargs,
 ) -> dict:
     engine = DecisionEngine(
@@ -969,6 +979,7 @@ def run_decision_engine(
         use_heuristic=use_heuristic,
         model_size=model_size,
         chunked=chunked,
+        max_download_seconds=max_download_seconds,
         **kwargs,
     )
 

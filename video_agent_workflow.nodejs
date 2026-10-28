@@ -111,7 +111,8 @@ return [{ json: { campaignId: d.campaign_id, campaignName: d.campaign_name, sour
                   campaign_name: '{{ $json.campaignName }}',
                   num_clips: '{{ $json.numClips }}',
                   aspect: '9:16',
-                  submit: false
+                  submit: false,
+                  max_download_seconds: 60
                 }
               }
             }

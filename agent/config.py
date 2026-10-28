@@ -87,6 +87,11 @@ MIN_CLIP_DURATION = float(os.getenv("MIN_CLIP_DURATION", "15.0"))
 MAX_CLIP_DURATION = float(os.getenv("MAX_CLIP_DURATION", "180.0"))
 MAX_VIDEO_SECONDS = int(os.getenv("AGENT_MAX_VIDEO_SECONDS", "3600"))
 
+# Download duration cap: only download the first N seconds of a YouTube video.
+# For long videos (3+ min), downloading the entire file wastes time. 60s is
+# enough to generate 1-3 clips of 15-20s each.
+DEFAULT_MAX_DOWNLOAD_SECONDS = int(os.getenv("MAX_DOWNLOAD_SECONDS", "60"))
+
 # Campaign / n8n integration
 CAMPAIGN_WEBHOOK_URL = os.getenv("CAMPAIGN_WEBHOOK_URL", "https://contentrewards.com/webhook/analytics")
 
