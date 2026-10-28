@@ -11,6 +11,9 @@ import logging
 import os
 import subprocess
 import time
+import sqlite3
+import contextlib
+import json as _json
 from pathlib import Path
 from typing import Any, Dict
 
@@ -33,15 +36,54 @@ app = FastAPI(
 
 app.state.workspace = Path(cfg.OUTPUT_DIR)
 
-_job_store: Dict[str, Dict[str, Any]] = {}
+# Persistent job storage using SQLite
+_JOB_DB_PATH = Path(os.getenv('JOB_DB_PATH', '/tmp/video_agent_data/jobs.db'))
+
+def _init_job_db():
+    _JOB_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with contextlib.closing(sqlite3.connect(_JOB_DB_PATH)) as conn:
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS jobs (
+                job_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                result TEXT,
+                error TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
+
+def _store_job(job_id: str, status: str, result: Dict = None, error: str = None):
+    with contextlib.closing(sqlite3.connect(_JOB_DB_PATH)) as conn:
+        result_json = _json.dumps(result) if result else None
+        conn.execute(
+            'INSERT OR REPLACE INTO jobs (job_id, status, result, error) VALUES (?, ?, ?, ?)',
+            (job_id, status, result_json, error)
+        )
+        conn.commit()
+
+def _get_job(job_id: str) -> Dict:
+    with contextlib.closing(sqlite3.connect(_JOB_DB_PATH)) as conn:
+        row = conn.execute(
+            'SELECT status, result, error FROM jobs WHERE job_id = ?', (job_id,)
+        ).fetchone()
+        if row:
+            return {
+                'status': row[0],
+                'result': _json.loads(row[1]) if row[1] else None,
+                'error': row[2]
+            }
+        return None
+
 _job_lock = threading.Lock()
 
 
 @app.on_event("startup")
 def _startup() -> None:
+    _init_job_db()
     cfg.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     cfg.OUTPUT_DIR.chmod(0o755)
-    log.info("startup: host=%s port=%s output=%s", cfg.HOST, cfg.PORT, cfg.OUTPUT_DIR)
+    log.info("startup: host=%s port=%s output=%s job_db=%s", cfg.HOST, cfg.PORT, cfg.OUTPUT_DIR, _JOB_DB_PATH)
 
 
 @app.get("/health")
@@ -109,29 +151,17 @@ def _process_clip_job(
             manifest["submitted"] = True
 
         with _job_lock:
-            _job_store[job_id] = {
-                "status": "completed",
-                "result": manifest,
-                "error": None,
-            }
+            _store_job(job_id, "completed", result=manifest, error=None)
         log.info("job %s complete: %s -> %d clips in %.1fs", job_id, youtube_url, len(manifest["clips"]), manifest["took_seconds"])
 
     except ClipPipelineError as e:
         log.error("job %s failed: %s", job_id, e)
         with _job_lock:
-            _job_store[job_id] = {
-                "status": "error",
-                "result": None,
-                "error": f"clipping failed: {e}",
-            }
+            _store_job(job_id, "error", result=None, error=f"clipping failed: {e}")
     except Exception as e:
         log.exception("job %s unexpected error", job_id)
         with _job_lock:
-            _job_store[job_id] = {
-                "status": "error",
-                "result": None,
-                "error": f"unexpected error: {type(e).__name__}: {e}",
-            }
+            _store_job(job_id, "error", result=None, error=f"unexpected error: {type(e).__name__}: {e}")
 
 
 @app.post("/api/clip")
@@ -161,12 +191,7 @@ def clip(payload: Dict[str, Any], background_tasks: BackgroundTasks) -> JSONResp
     max_download_seconds = int(payload.get("max_download_seconds", DEFAULT_MAX_DOWNLOAD_SECONDS))
 
     job_id = str(_uuid.uuid4())
-    with _job_lock:
-        _job_store[job_id] = {
-            "status": "processing",
-            "result": None,
-            "error": None,
-        }
+    _store_job(job_id, "processing", result=None, error=None)
 
     background_tasks.add_task(
         _process_clip_job,
@@ -199,8 +224,7 @@ def get_status(job_id: str) -> JSONResponse:
     Response when completed:  {"status": "completed", "result": {...}}
     Response when error:      {"status": "error", "error": "..."}
     """
-    with _job_lock:
-        job = _job_store.get(job_id)
+    job = _get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"job {job_id} not found")
     return JSONResponse(content=job)
