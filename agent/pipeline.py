@@ -1048,7 +1048,6 @@ class DecisionEngine:
     def _poll_content_rewards(self, campaign_id: str, campaign_name: str,
                               video_url: str, clips: List[Dict]):
         try:
-from .contentrewards_scraper import ContentRewardsScraper, ScrapingError
             scraper = ContentRewardsScraper()
             performance = scraper.get_campaign_performance(campaign_id)
             if performance:
