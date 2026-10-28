@@ -286,14 +286,12 @@ def _download_video(url: str, work_dir: Path, max_duration: int = 600) -> Path:
         log.info(f"Using cached video: {cache_file}")
         return cache_file
 
-    log.info(f"Downloading video (max {max_duration}s, 1080p): {url}")
+        log.info(f"Downloading video (max {max_duration}s, 1080p): {url}")
     ydl_opts = {
         'outtmpl': str(work_dir / 'source_video.%(ext)s'),
-        'format': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]',
+        'format': 'best[height<=1080]/best',
         'merge_output_format': 'mp4',
         'quiet': True,
-        'download_ranges': lambda info, ydl: [(0, max_duration)] if max_duration > 0 else None,
-        'concurrent_fragment_downloads': 8,
         'noprogress': True,
         'fragment_retries': 3,
         'retries': 5,
