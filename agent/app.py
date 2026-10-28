@@ -525,3 +525,90 @@ def api_poll() -> Dict[str, Any]:
     poller = ContentRewardsPoller()
     processed = poller.poll()
     return {"processed": processed, "status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Full Autonomous Cycle - Agent handles everything internally
+# ---------------------------------------------------------------------------
+
+@app.post("/api/run-cycle")
+def api_run_cycle(payload: Dict[str, Any] = None) -> Dict[str, Any]:
+    """
+    Run the complete autonomous pipeline:
+    1. Scrape Content Rewards campaigns
+    2. Select campaigns worth pursuing
+    3. Download, transcribe, highlight, render clips
+    4. Post to YouTube (Composio), Instagram (Composio), TikTok (Zernio)
+    5. Track posted videos in database
+    6. Monitor for payment eligibility
+    7. Train model on performance data
+    
+    Expected body (all optional):
+    {
+      "tab": "All",                    # Discover tab to scrape
+      "min_cpm": 0.0,                  # Minimum CPM threshold
+      "max_campaigns": 5,              # Max campaigns to process
+      "num_clips": 3,                  # Clips per campaign
+      "use_llm": true,                 # Use LLM for highlight selection
+      "require_platforms": ["YouTube","TikTok","Instagram"]
+    }
+    """
+    payload = payload or {}
+    from .pipeline import run_full_cycle, PostedVideosTracker, PerformanceRecorder
+
+    try:
+        result = run_full_cycle(
+            tab=payload.get("tab", "All"),
+            min_cpm=float(payload.get("min_cpm", 0.0)),
+            require_platforms=payload.get("require_platforms", None),
+            max_campaigns=int(payload.get("max_campaigns", 5)),
+            num_clips=int(payload.get("num_clips", cfg.DEFAULT_NUM_CLIPS)),
+            use_llm=bool(payload.get("use_llm", cfg.USE_LLM)),
+            webhook_url=cfg.CAMPAIGN_WEBHOOK_URL,
+        )
+        return JSONResponse(content=result)
+    except Exception as e:
+        log.exception("run-cycle failed")
+        raise HTTPException(status_code=500, detail=f"run-cycle failed: {type(e).__name__}: {e}")
+
+
+@app.get("/api/monitor-posted")
+def api_monitor_posted(hours: int = 24) -> Dict[str, Any]:
+    """
+    Check all posted videos for performance/payment criteria.
+    
+    Videos meeting payment threshold (earnings > 0 or views > 1000)
+    are flagged for notification via webhook.
+    
+    Query params:
+      hours: How far back to check for unmonitored videos (default 24)
+    """
+    from .pipeline import monitor_posted_videos, PostedVideosTracker
+
+    try:
+        result = monitor_posted_videos(hours=hours)
+        return JSONResponse(content=result)
+    except Exception as e:
+        log.exception("monitor-posted failed")
+        raise HTTPException(status_code=500, detail=f"monitor-posted failed: {type(e).__name__}: {e}")
+
+
+@app.get("/api/posted-videos")
+def api_posted_videos(limit: int = 100) -> Dict[str, Any]:
+    """
+    List all posted videos with their performance metrics.
+    
+    Query params:
+      limit: Max number of videos to return (default 100)
+    """
+    from .pipeline import PostedVideosTracker
+
+    try:
+        tracker = PostedVideosTracker()
+        videos = tracker.get_all_posted(limit=limit)
+        return JSONResponse(content={"count": len(videos), "videos": videos})
+    except Exception as e:
+        log.exception("posted-videos failed")
+        raise HTTPException(status_code=500, detail=f"posted-videos failed: {type(e).__name__}: {e}")
+
+

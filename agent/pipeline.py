@@ -31,13 +31,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yt_dlp
+import requests
 
 from .boundary import adjust_window
 from .clipper import ClipError, render_clip, build_ass_subtitles
 from .config import (
     AGENT_CACHE_DIR, DATA_DIR, OUTPUT_DIR, DEFAULT_NUM_CLIPS, MAX_CLIP_DURATION, MAX_NUM_CLIPS,
     logger_config, PROVIDER_ORDER, USE_LLM, DEFAULT_MAX_DOWNLOAD_SECONDS,
+    CAMPAIGN_WEBHOOK_URL,
 )
+from .contentrewards_scraper import ContentRewardsScraper
 from .jev_decision import ChoiceAnswer, JVEDecisionEngine
 from .heuristic import score_segments as score_all_segments
 from .highlight_selection import UnifiedHighlightSelector
@@ -117,6 +120,173 @@ class IdempotencyCache:
                 "clip_id": r[0], "campaign_id": r[1], "campaign_name": r[2],
                 "video_url": r[3], "youtube_url": r[4], "submitted_at": r[5],
                 "status": r[6],
+            }
+            for r in rows
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Posted Videos Tracker - Persistent tracking of all posted videos
+# ---------------------------------------------------------------------------
+
+class PostedVideosTracker:
+    """Tracks all posted videos across platforms for monitoring and payment eligibility."""
+
+    def __init__(self, db_path: Path = None):
+        self.db_path = db_path or DATA_DIR / "posted_videos.db"
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+
+    def _init_db(self):
+        with contextlib.closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS posted_videos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    clip_id TEXT UNIQUE,
+                    campaign_id TEXT,
+                    campaign_name TEXT,
+                    platform TEXT,
+                    video_url TEXT,
+                    public_url TEXT,
+                    posted_at TEXT DEFAULT (datetime('now')),
+                    views INTEGER DEFAULT 0,
+                    earnings REAL DEFAULT 0.0,
+                    cpm REAL DEFAULT 0.0,
+                    status TEXT DEFAULT 'posted',
+                    payment_threshold_met INTEGER DEFAULT 0,
+                    notified INTEGER DEFAULT 0,
+                    last_checked TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_posted_videos_campaign
+                ON posted_videos(campaign_id, platform)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_posted_videos_status
+                ON posted_videos(status, payment_threshold_met)
+            """)
+            conn.commit()
+
+    def record_posted(
+        self,
+        clip_id: str,
+        campaign_id: str,
+        campaign_name: str,
+        platform: str,
+        public_url: str,
+        video_url: str = None,
+    ):
+        """Record that a video was posted to a platform."""
+        with contextlib.closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO posted_videos
+                   (clip_id, campaign_id, campaign_name, platform, video_url, public_url)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (clip_id, campaign_id, campaign_name, platform, video_url, public_url),
+            )
+            conn.commit()
+        log.info(f"Recorded posted video: {platform} - {public_url}")
+
+    def update_performance(
+        self,
+        clip_id: str,
+        views: int = None,
+        earnings: float = None,
+        cpm: float = None,
+        status: str = None,
+    ):
+        """Update performance metrics for a posted video."""
+        updates = []
+        params = []
+        if views is not None:
+            updates.append("views = ?")
+            params.append(views)
+        if earnings is not None:
+            updates.append("earnings = ?")
+            params.append(earnings)
+        if cpm is not None:
+            updates.append("cpm = ?")
+            params.append(cpm)
+        if status is not None:
+            updates.append("status = ?")
+            params.append(status)
+        updates.append("last_checked = datetime('now')")
+        params.append(clip_id)
+
+        if not updates:
+            return
+
+        with contextlib.closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                f"UPDATE posted_videos SET {', '.join(updates)} WHERE clip_id = ?",
+                params,
+            )
+            conn.commit()
+
+    def mark_payment_threshold_met(self, clip_id: str, notified: bool = False):
+        """Mark that a video has met the payment threshold."""
+        with contextlib.closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                "UPDATE posted_videos SET payment_threshold_met = 1, notified = ? WHERE clip_id = ?",
+                (1 if notified else 0, clip_id),
+            )
+            conn.commit()
+
+    def get_unnotified_threshold_met(self) -> List[Dict]:
+        """Get videos that met payment threshold but haven't been notified."""
+        with contextlib.closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute(
+                """SELECT clip_id, campaign_id, campaign_name, platform, public_url,
+                          views, earnings, cpm
+                   FROM posted_videos
+                   WHERE payment_threshold_met = 1 AND notified = 0"""
+            ).fetchall()
+        return [
+            {
+                "clip_id": r[0], "campaign_id": r[1], "campaign_name": r[2],
+                "platform": r[3], "public_url": r[4], "views": r[5],
+                "earnings": r[6], "cpm": r[7],
+            }
+            for r in rows
+        ]
+
+    def get_all_posted(self, limit: int = 100) -> List[Dict]:
+        """Get all posted videos."""
+        with contextlib.closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute(
+                """SELECT clip_id, campaign_id, campaign_name, platform, public_url,
+                          views, earnings, cpm, posted_at, status
+                   FROM posted_videos
+                   ORDER BY posted_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "clip_id": r[0], "campaign_id": r[1], "campaign_name": r[2],
+                "platform": r[3], "public_url": r[4], "views": r[5],
+                "earnings": r[6], "cpm": r[7], "posted_at": r[8], "status": r[9],
+            }
+            for r in rows
+        ]
+
+    def get_needs_checking(self, hours: int = 24) -> List[Dict]:
+        """Get videos that haven't been checked recently."""
+        with contextlib.closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute(
+                """SELECT clip_id, campaign_id, campaign_name, platform, public_url,
+                          views, earnings, cpm, last_checked
+                   FROM posted_videos
+                   WHERE last_checked IS NULL
+                      OR datetime(last_checked) < datetime('now', ? || ' hours')
+                   ORDER BY posted_at DESC""",
+                (-hours,),
+            ).fetchall()
+        return [
+            {
+                "clip_id": r[0], "campaign_id": r[1], "campaign_name": r[2],
+                "platform": r[3], "public_url": r[4], "views": r[5],
+                "earnings": r[6], "cpm": r[7], "last_checked": r[8],
             }
             for r in rows
         ]
@@ -266,6 +436,112 @@ class PerformanceRecorder:
                 "retention_score": row[6],
             }
         return {}
+
+
+# ---------------------------------------------------------------------------
+# Campaign Scraper + Selector - Agent-side campaign discovery
+# ---------------------------------------------------------------------------
+
+class CampaignScraperAndSelector:
+    """
+    Agent-side campaign discovery and selection.
+    
+    Scrapes Content Rewards discover page, extracts campaign details,
+    and selects campaigns worth pursuing based on payout, platforms, and CPM.
+    """
+
+    def __init__(self, scraper: ContentRewardsScraper = None):
+        self.scraper = scraper or ContentRewardsScraper()
+        self._login_attempted = False
+
+    def ensure_login(self) -> bool:
+        """Attempt login if credentials are available (one-time)."""
+        if self._login_attempted:
+            return self.scraper._logged_in
+        self._login_attempted = True
+        return self.scraper.login()
+
+    def discover_and_select(
+        self,
+        tab: str = "All",
+        min_cpm: float = 0.0,
+        require_platforms: List[str] = None,
+        max_campaigns: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Full campaign discovery pipeline:
+        1. Optionally login
+        2. Scrape discover page for campaign URLs
+        3. Scrape each campaign detail page
+        4. Filter by CPM, platforms, etc.
+        5. Return ranked list of campaigns worth pursuing
+        
+        Returns list of campaign dicts ready for clip processing.
+        """
+        # Attempt login if credentials available
+        self.ensure_login()
+
+        # Step 1: Scrape discover page
+        try:
+            campaigns = self.scraper.scrape_discover_page(tab=tab)
+        except ScrapingError as e:
+            log.error(f"Discover page scrape failed: {e}")
+            return []
+
+        if not campaigns:
+            log.warning("No campaigns found on discover page")
+            return []
+
+        log.info(f"Found {len(campaigns)} campaigns, scraping details...")
+
+        # Step 2: Scrape details for each campaign
+        detailed = []
+        for campaign in campaigns:
+            try:
+                detail = self.scraper.scrape_campaign_details(campaign)
+                detailed.append(detail)
+            except Exception as e:
+                log.warning(f"Failed to scrape details for {campaign.get('url')}: {e}")
+                continue
+
+        log.info(f"Successfully scraped {len(detailed)} campaign details")
+
+        # Step 3: Filter and rank
+        require_platforms = require_platforms or ["YouTube", "TikTok", "Instagram"]
+        filtered = []
+
+        for camp in detailed:
+            cpm = camp.get("cpm") or 0
+            platforms = camp.get("allowed_platforms", [])
+
+            # Filter by minimum CPM
+            if cpm < min_cpm:
+                continue
+
+            # Filter by required platforms (at least one match)
+            if require_platforms and not any(p in platforms for p in require_platforms):
+                continue
+
+            # Skip campaigns with errors
+            if camp.get("error"):
+                continue
+
+            # Score: higher CPM + more platforms = better
+            score = cpm + (len(platforms) * 0.5)
+            camp["selection_score"] = score
+            camp["selected"] = True
+            filtered.append(camp)
+
+        # Sort by score descending
+        filtered.sort(key=lambda c: c.get("selection_score", 0), reverse=True)
+
+        selected = filtered[:max_campaigns]
+        log.info(f"Selected {len(selected)} campaigns after filtering")
+        for c in selected:
+            log.info(f"  - {c.get('name', 'unknown')}: CPM=${c.get('cpm')}, "
+                     f"platforms={c.get('allowed_platforms')}, score={c.get('selection_score'):.1f}")
+
+        return selected
 
 
 # ---------------------------------------------------------------------------
@@ -551,18 +827,22 @@ class DecisionEngine:
 
     def __init__(
         self,
-        n8n_url: str,
+        n8n_url: str = "",
         cache: IdempotencyCache = None,
         perf_recorder: PerformanceRecorder = None,
+        posted_videos_tracker: PostedVideosTracker = None,
         highlight_selector: UnifiedHighlightSelector = None,
         learning_loop: LearningLoop = None,
         llm_client: LLMClient = None,
         llm_model=None,
         output_dir: Path = None,
+        webhook_url: str = None,
     ):
         self.n8n_url = n8n_url
+        self.webhook_url = webhook_url or CAMPAIGN_WEBHOOK_URL
         self.cache = cache or IdempotencyCache()
         self.perf_recorder = perf_recorder or PerformanceRecorder()
+        self.posted_videos = posted_videos_tracker or PostedVideosTracker()
         self.highlight_selector = highlight_selector or UnifiedHighlightSelector()
         self.learning_loop = learning_loop or LearningLoop()
         self.llm_client = llm_client
@@ -573,6 +853,7 @@ class DecisionEngine:
         self.profiler = PipelineProfiler()
         self.retention_predictor = RetentionCurvePredictor()
         self.training_data = []
+        self.campaign_scraper = CampaignScraperAndSelector()
 
     def run(self, url: str, campaign_id: str, campaign_name: str,
             num_clips: int = DEFAULT_NUM_CLIPS,
@@ -766,15 +1047,8 @@ class DecisionEngine:
 
     def _poll_content_rewards(self, campaign_id: str, campaign_name: str,
                               video_url: str, clips: List[Dict]):
-        """
-        Poll the Content Rewards scraper for actual performance data.
-
-        This is the analytics ingestion step - it fetches views, watch time,
-        earnings, and retention data from Content Rewards and feeds it back
-        into the performance recorder for model training.
-        """
         try:
-            from .contentrewards_scraper import ContentRewardsScraper
+from .contentrewards_scraper import ContentRewardsScraper, ScrapingError
             scraper = ContentRewardsScraper()
             performance = scraper.get_campaign_performance(campaign_id)
             if performance:
@@ -823,6 +1097,450 @@ class DecisionEngine:
             log.debug("ContentRewardsScraper not available, skipping performance poll")
         except Exception as e:
             log.warning(f"Failed to poll Content Rewards performance: {e}")
+
+    # ---------------------------------------------------------------------------
+    # Video Monitoring - Check posted videos for payment eligibility
+    # ---------------------------------------------------------------------------
+
+    def monitor_posted_videos(self, hours: int = 24) -> dict:
+        """
+        Check all posted videos for performance/payment criteria.
+        
+        For videos that meet payment thresholds (earnings > 0 or views > threshold),
+        marks them for notification and returns details.
+        
+        Returns dict with:
+          - videos_checked: int
+          - threshold_met: list of videos meeting payment criteria
+          - notifications_sent: int
+        """
+        log.info(f"Starting video monitoring check (last {hours}h)...")
+        needs_checking = self.posted_videos.get_needs_checking(hours=hours)
+        threshold_met = []
+        notified = 0
+
+        for video in needs_checking:
+            clip_id = video["clip_id"]
+            platform = video["platform"]
+            public_url = video["public_url"]
+
+            try:
+                # Check if we have webhook/n8n to get fresh analytics
+                # For now, check if we have any stored performance data
+                perf = self.perf_recorder.get_latest_performance(video["campaign_id"])
+                
+                views = perf.get("views", video.get("views", 0))
+                earnings = perf.get("earnings", video.get("earnings", 0))
+                cpm = perf.get("cpm", video.get("cpm", 0))
+
+                # Update posted_videos with latest performance
+                self.posted_videos.update_performance(
+                    clip_id=clip_id,
+                    views=views,
+                    earnings=earnings,
+                    cpm=cpm,
+                    status="checked",
+                )
+
+                # Payment threshold: earnings > 0 OR views > 1000
+                if earnings > 0 or views > 1000:
+                    self.posted_videos.mark_payment_threshold_met(clip_id, notified=False)
+                    threshold_met.append({
+                        "clip_id": clip_id,
+                        "campaign_id": video["campaign_id"],
+                        "campaign_name": video["campaign_name"],
+                        "platform": platform,
+                        "public_url": public_url,
+                        "views": views,
+                        "earnings": earnings,
+                        "cpm": cpm,
+                    })
+                    log.info(f"PAYMENT THRESHOLD MET: {platform} - {public_url} "
+                             f"(views={views}, earnings=${earnings:.2f})")
+
+            except Exception as e:
+                log.warning(f"Failed to check video {clip_id}: {e}")
+
+        # Get all unnotified threshold-met videos
+        unnotified = self.posted_videos.get_unnotified_threshold_met()
+
+        # Send notifications via webhook if configured
+        if unnotified and self.webhook_url:
+            try:
+                self._post_to_webhook({
+                    "event": "payment_threshold_met",
+                    "videos": unnotified,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+                for v in unnotified:
+                    self.posted_videos.mark_payment_threshold_met(v["clip_id"], notified=True)
+                    notified += 1
+                log.info(f"Sent {notified} payment threshold notifications via webhook")
+            except Exception as e:
+                log.warning(f"Failed to send webhook notifications: {e}")
+
+        result = {
+            "videos_checked": len(needs_checking),
+            "threshold_met": threshold_met,
+            "notifications_sent": notified,
+            "total_posted": len(self.posted_videos.get_all_posted()),
+        }
+        log.info(f"Monitoring complete: {result['videos_checked']} checked, "
+                 f"{len(threshold_met)} met threshold, {notified} notified")
+        return result
+
+    # ---------------------------------------------------------------------------
+    # Full Cycle - Agent runs everything internally
+    # ---------------------------------------------------------------------------
+
+    def run_full_cycle(
+        self,
+        tab: str = "All",
+        min_cpm: float = 0.0,
+        require_platforms: List[str] = None,
+        max_campaigns: int = 5,
+        num_clips: int = DEFAULT_NUM_CLIPS,
+        use_llm: bool = True,
+    ) -> dict:
+        """
+        Complete autonomous cycle:
+        1. Scrape Content Rewards campaigns
+        2. Select campaigns worth pursuing
+        3. For each campaign: download, transcribe, highlight, render, post
+        4. Track posted videos
+        5. Monitor for payment eligibility
+        
+        Returns results dict with all cycle data.
+        """
+        cycle_start = time.time()
+        results = {
+            "campaigns_found": 0,
+            "campaigns_selected": 0,
+            "campaigns_processed": 0,
+            "clips_created": 0,
+            "clips_posted": 0,
+            "errors": [],
+            "videos_posted": [],
+            "monitoring": None,
+        }
+
+        # Step 1: Discover and select campaigns
+        log.info("=" * 60)
+        log.info("FULL CYCLE: Campaign Discovery & Selection")
+        log.info("=" * 60)
+        try:
+            selected = self.campaign_scraper.discover_and_select(
+                tab=tab,
+                min_cpm=min_cpm,
+                require_platforms=require_platforms,
+                max_campaigns=max_campaigns,
+            )
+            results["campaigns_found"] = len(selected)
+            results["campaigns_selected"] = len(selected)
+        except Exception as e:
+            log.error(f"Campaign discovery failed: {e}")
+            results["errors"].append(f"discovery: {e}")
+            selected = []
+
+        # Step 2: Process each selected campaign
+        for i, campaign in enumerate(selected):
+            campaign_id = campaign.get("campaign_id", campaign.get("url", f"campaign_{i}"))
+            campaign_name = campaign.get("name", "unknown")
+            source_video_url = campaign.get("source_video_url") or campaign.get("url")
+            cpm = campaign.get("cpm", 0.0)
+
+            if not source_video_url:
+                log.warning(f"Campaign {campaign_name} has no video URL, skipping")
+                results["errors"].append(f"{campaign_name}: no video URL")
+                continue
+
+            log.info(f"\n{'='*60}")
+            log.info(f"Processing campaign {i+1}/{len(selected)}: {campaign_name}")
+            log.info(f"{'='*60}")
+
+            try:
+                result = self.run(
+                    url=source_video_url,
+                    campaign_id=campaign_id,
+                    campaign_name=campaign_name,
+                    num_clips=num_clips,
+                    use_llm=use_llm,
+                    cpm=cpm,
+                    poll_performance=False,  # We'll monitor separately
+                )
+
+                clips = result["manifest"].get("clips", [])
+                results["campaigns_processed"] += 1
+                results["clips_created"] += len(clips)
+
+                # Step 3: Post clips to platforms
+                posted = self._post_to_platforms(clips, campaign_id, campaign_name, cpm)
+                results["clips_posted"] += len(posted)
+                results["videos_posted"].extend(posted)
+
+            except Exception as e:
+                log.error(f"Campaign {campaign_name} failed: {e}")
+                results["errors"].append(f"{campaign_name}: {e}")
+                continue
+
+        # Step 4: Monitor posted videos for payment
+        log.info("\n" + "=" * 60)
+        log.info("Video Monitoring & Payment Check")
+        log.info("=" * 60)
+        try:
+            monitoring = self.monitor_posted_videos(hours=24)
+            results["monitoring"] = monitoring
+        except Exception as e:
+            log.error(f"Monitoring failed: {e}")
+            results["errors"].append(f"monitoring: {e}")
+
+        # Step 5: Train model
+        try:
+            self.update_model()
+        except Exception as e:
+            log.warning(f"Model training skipped: {e}")
+
+        duration = time.time() - cycle_start
+        results["duration_seconds"] = round(duration, 1)
+        results["success"] = len(results["errors"]) == 0
+
+        log.info(f"\n{'='*60}")
+        log.info(f"FULL CYCLE COMPLETE in {duration:.1f}s")
+        log.info(f"  Campaigns: {results['campaigns_processed']}/{results['campaigns_selected']}")
+        log.info(f"  Clips: {results['clips_created']} created, {results['clips_posted']} posted")
+        log.info(f"  Errors: {len(results['errors'])}")
+        log.info(f"{'='*60}")
+
+        return results
+
+    # ---------------------------------------------------------------------------
+    # Platform Posting - YouTube (Composio), Instagram (Composio), TikTok (Zernio)
+    # ---------------------------------------------------------------------------
+
+    def _post_to_platforms(
+        self,
+        clips: List[Dict],
+        campaign_id: str,
+        campaign_name: str,
+        cpm: float = 0.0,
+    ) -> List[Dict]:
+        """
+        Post rendered clips to platforms:
+        - YouTube: Composio API
+        - Instagram: Composio API  
+        - TikTok: Zernio API
+        
+        Returns list of posted video records.
+        """
+        posted = []
+        for clip in clips:
+            clip_id = clip.get("clip_id", "unknown")
+            public_url = clip.get("public_path", "")
+            hook_title = clip.get("hook_title", clip.get("text", "")[:80])
+            caption = clip.get("caption", "")
+            tags = clip.get("tags", [])
+
+            if not public_url:
+                log.warning(f"Clip {clip_id} has no public URL, skipping post")
+                continue
+
+            # YouTube via Composio
+            try:
+                yt_result = self._post_youtube_composio(
+                    video_url=public_url,
+                    title=hook_title,
+                    description=caption,
+                    tags=tags,
+                    campaign_id=campaign_id,
+                )
+                if yt_result.get("success"):
+                    self.posted_videos.record_posted(
+                        clip_id=clip_id,
+                        campaign_id=campaign_id,
+                        campaign_name=campaign_name,
+                        platform="youtube",
+                        public_url=yt_result.get("video_url", public_url),
+                        video_url=public_url,
+                    )
+                    posted.append({
+                        "clip_id": clip_id,
+                        "platform": "youtube",
+                        "public_url": yt_result.get("video_url", public_url),
+                        "campaign_id": campaign_id,
+                    })
+                    log.info(f"Posted to YouTube: {clip_id}")
+            except Exception as e:
+                log.warning(f"YouTube post failed for {clip_id}: {e}")
+
+            # Instagram via Composio
+            try:
+                ig_result = self._post_instagram_composio(
+                    video_url=public_url,
+                    caption=caption,
+                    title=hook_title,
+                    hashtags=tags,
+                    campaign_id=campaign_id,
+                )
+                if ig_result.get("success"):
+                    self.posted_videos.record_posted(
+                        clip_id=clip_id,
+                        campaign_id=campaign_id,
+                        campaign_name=campaign_name,
+                        platform="instagram",
+                        public_url=ig_result.get("video_url", public_url),
+                        video_url=public_url,
+                    )
+                    posted.append({
+                        "clip_id": clip_id,
+                        "platform": "instagram",
+                        "public_url": ig_result.get("video_url", public_url),
+                        "campaign_id": campaign_id,
+                    })
+                    log.info(f"Posted to Instagram: {clip_id}")
+            except Exception as e:
+                log.warning(f"Instagram post failed for {clip_id}: {e}")
+
+            # TikTok via Zernio (Composio doesn't support TikTok)
+            try:
+                tt_result = self._post_tiktok_zernio(
+                    video_url=public_url,
+                    caption=caption,
+                    title=hook_title,
+                    hashtags=tags,
+                    campaign_id=campaign_id,
+                )
+                if tt_result.get("success"):
+                    self.posted_videos.record_posted(
+                        clip_id=clip_id,
+                        campaign_id=campaign_id,
+                        campaign_name=campaign_name,
+                        platform="tiktok",
+                        public_url=tt_result.get("video_url", public_url),
+                        video_url=public_url,
+                    )
+                    posted.append({
+                        "clip_id": clip_id,
+                        "platform": "tiktok",
+                        "public_url": tt_result.get("video_url", public_url),
+                        "campaign_id": campaign_id,
+                    })
+                    log.info(f"Posted to TikTok: {clip_id}")
+            except Exception as e:
+                log.warning(f"TikTok post failed for {clip_id}: {e}")
+
+        return posted
+
+    def _post_youtube_composio(
+        self,
+        video_url: str,
+        title: str,
+        description: str,
+        tags: List[str],
+        campaign_id: str,
+    ) -> dict:
+        """Post to YouTube via Composio API."""
+        import requests
+        url = "https://backend.composio.dev/api/v3.1/tools/execute/YOUTUBE_UPLOAD_VIDEO"
+        payload = {
+            "user_id": "default",
+            "arguments": {
+                "title": title,
+                "description": description,
+                "tags": [t.replace("#", "") for t in tags],
+                "categoryId": "22",
+                "privacyStatus": "public",
+                "videoFilePath": {
+                    "name": f"{campaign_id}.mp4",
+                    "mimetype": "video/mp4",
+                    "url": video_url,
+                },
+            },
+        }
+        resp = requests.post(
+            url,
+            json=payload,
+            headers={
+                "x-api-key": f"{{ $env.COMPOSIO_API_KEY }}",
+                "Content-Type": "application/json",
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return {"success": True, "video_url": video_url, "response": resp.json()}
+
+    def _post_instagram_composio(
+        self,
+        video_url: str,
+        caption: str,
+        title: str,
+        hashtags: List[str],
+        campaign_id: str,
+    ) -> dict:
+        """Post to Instagram via Composio API."""
+        import requests
+        url = "https://backend.composio.dev/api/v3.1/tools/execute/INSTAGRAM_POST_IG_USER_MEDIA"
+        payload = {
+            "user_id": "default",
+            "arguments": {
+                "caption": caption,
+                "media_url": video_url,
+                "title": title,
+            },
+        }
+        resp = requests.post(
+            url,
+            json=payload,
+            headers={
+                "x-api-key": f"{{ $env.COMPOSIO_API_KEY }}",
+                "Content-Type": "application/json",
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return {"success": True, "video_url": video_url, "response": resp.json()}
+
+    def _post_tiktok_zernio(
+        self,
+        video_url: str,
+        caption: str,
+        title: str,
+        hashtags: List[str],
+        campaign_id: str,
+    ) -> dict:
+        """Post to TikTok via Zernio API."""
+        import requests
+        url = "https://zernio.com/api/v1/posts"
+        payload = {
+            "platform": "tiktok",
+            "videoUrl": video_url,
+            "caption": caption,
+            "title": title,
+            "hashtags": hashtags,
+            "apiKey": "$env.ZERONIO_API_KEY",
+        }
+        resp = requests.post(
+            url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return {"success": True, "video_url": video_url, "response": resp.json()}
+
+    def _post_to_webhook(self, payload: dict):
+        """Post results to configured webhook (n8n or other)."""
+        import requests
+        if not self.webhook_url:
+            log.warning("No webhook URL configured, skipping webhook post")
+            return
+        resp = requests.post(
+            self.webhook_url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        log.info(f"Webhook posted: {resp.status_code}")
 
     def update_model(self) -> bool:
         """
@@ -963,16 +1681,20 @@ def run_decision_engine(
     model_size: str = "tiny",
     chunked: bool = True,
     max_download_seconds: int = DEFAULT_MAX_DOWNLOAD_SECONDS,
+    webhook_url: str = None,
+    posted_videos_tracker: PostedVideosTracker = None,
     **kwargs,
 ) -> dict:
     engine = DecisionEngine(
         n8n_url=n8n_url,
         cache=cache,
         perf_recorder=PerformanceRecorder(),
+        posted_videos_tracker=posted_videos_tracker,
         highlight_selector=UnifiedHighlightSelector(),
         llm_client=kwargs.get("client"),
         llm_model=kwargs.get("model"),
         output_dir=kwargs.get("output_dir"),
+        webhook_url=webhook_url,
     )
     return engine.run(
         url=url,
@@ -987,6 +1709,52 @@ def run_decision_engine(
         max_download_seconds=max_download_seconds,
         **kwargs,
     )
+
+
+def run_full_cycle(
+    tab: str = "All",
+    min_cpm: float = 0.0,
+    require_platforms: List[str] = None,
+    max_campaigns: int = 5,
+    num_clips: int = DEFAULT_NUM_CLIPS,
+    use_llm: bool = True,
+    webhook_url: str = None,
+) -> dict:
+    """
+    Standalone full cycle entry point.
+    Scrape campaigns -> select -> clip -> post -> monitor -> train.
+    """
+    engine = DecisionEngine(
+        n8n_url="",
+        cache=IdempotencyCache(),
+        perf_recorder=PerformanceRecorder(),
+        posted_videos_tracker=PostedVideosTracker(),
+        highlight_selector=UnifiedHighlightSelector(),
+        webhook_url=webhook_url,
+    )
+    return engine.run_full_cycle(
+        tab=tab,
+        min_cpm=min_cpm,
+        require_platforms=require_platforms,
+        max_campaigns=max_campaigns,
+        num_clips=num_clips,
+        use_llm=use_llm,
+    )
+
+
+def monitor_posted_videos(hours: int = 24) -> dict:
+    """
+    Standalone monitoring entry point.
+    Check posted videos for payment eligibility and send notifications.
+    """
+    engine = DecisionEngine(
+        n8n_url="",
+        cache=IdempotencyCache(),
+        perf_recorder=PerformanceRecorder(),
+        posted_videos_tracker=PostedVideosTracker(),
+        webhook_url=CAMPAIGN_WEBHOOK_URL,
+    )
+    return engine.monitor_posted_videos(hours=hours)
 
 
 def process_local_video(
