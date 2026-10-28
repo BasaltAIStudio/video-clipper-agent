@@ -757,7 +757,7 @@ class DecisionEngine:
                 "clips_dir": str(campaign_output),
             }
 
-        except ClipPipelineError:
+        except ClipError:
             raise
         except Exception as e:
             stats.record_run(success=False, duration=time.time() - start_time, error=str(e))
