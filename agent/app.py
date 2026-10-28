@@ -14,7 +14,10 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
-from fastapi import FastAPI, HTTPException, File, UploadFile, Request
+import threading
+import uuid as _uuid
+
+from fastapi import FastAPI, HTTPException, File, UploadFile, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 
 from . import config as cfg
@@ -28,6 +31,9 @@ app = FastAPI(
 )
 
 app.state.workspace = Path(cfg.OUTPUT_DIR)
+
+_job_store: Dict[str, Dict[str, Any]] = {}
+_job_lock = threading.Lock()
 
 
 @app.on_event("startup")
@@ -56,9 +62,80 @@ def health() -> Dict[str, Any]:
     }
 
 
+def _process_clip_job(
+    job_id: str,
+    youtube_url: str,
+    campaign_id: str,
+    campaign_name: str,
+    num_clips: int,
+    submit: bool,
+) -> None:
+    """Background task: run the full clip pipeline and store results in _job_store."""
+    from .clipper import ClipError as ClipPipelineError
+    from .pipeline import run_decision_engine
+
+    started = time.time()
+    try:
+        result = run_decision_engine(
+            url=youtube_url,
+            n8n_url="",
+            campaign_id=campaign_id,
+            campaign_name=campaign_name,
+            num_clips=min(max(num_clips, 1), cfg.MAX_NUM_CLIPS),
+            use_llm=cfg.USE_LLM,
+            use_heuristic=not cfg.USE_LLM,
+            model_size="tiny",
+            chunked=True,
+            poll_performance=False,
+        )
+
+        manifest: Dict[str, Any] = {
+            "job_id": job_id,
+            "campaign_id": campaign_id,
+            "campaign_name": campaign_name,
+            "youtube_url": youtube_url,
+            "status": "completed",
+            "num_clips": len(result["manifest"].get("clips", [])),
+            "duration": result["manifest"].get("transcript_duration", 0.0),
+            "clips": result["manifest"].get("clips", []),
+            "took_seconds": round(time.time() - started, 3),
+        }
+
+        if cfg.CAMPAIGN_WEBHOOK_URL and submit:
+            _submit_to_webhook(manifest)
+            manifest["submitted"] = True
+
+        with _job_lock:
+            _job_store[job_id] = {
+                "status": "completed",
+                "result": manifest,
+                "error": None,
+            }
+        log.info("job %s complete: %s -> %d clips in %.1fs", job_id, youtube_url, len(manifest["clips"]), manifest["took_seconds"])
+
+    except ClipPipelineError as e:
+        log.error("job %s failed: %s", job_id, e)
+        with _job_lock:
+            _job_store[job_id] = {
+                "status": "error",
+                "result": None,
+                "error": f"clipping failed: {e}",
+            }
+    except Exception as e:
+        log.exception("job %s unexpected error", job_id)
+        with _job_lock:
+            _job_store[job_id] = {
+                "status": "error",
+                "result": None,
+                "error": f"unexpected error: {type(e).__name__}: {e}",
+            }
+
+
 @app.post("/api/clip")
-def clip(payload: Dict[str, Any]) -> JSONResponse:
-    """Run the clipper on a YouTube URL and return the clip manifest.
+def clip(payload: Dict[str, Any], background_tasks: BackgroundTasks) -> JSONResponse:
+    """Start the clipper on a YouTube URL asynchronously.
+
+    Returns immediately with a job_id. Poll /api/status/{job_id} for results.
 
     Expected body:
     {
@@ -70,64 +147,58 @@ def clip(payload: Dict[str, Any]) -> JSONResponse:
       "submit": true               # optional: also POST results to CAMPAIGN_WEBHOOK_URL
     }
     """
-    # Lazy imports: these pull in heavy packages (faster-whisper, openai, etc.)
-    # that would otherwise slow the container's startup past Render's health
-    # check window on the free tier. Import inside the function instead.
-    from .clipper import ClipError as ClipPipelineError
-    from .pipeline import IdempotencyCache
-    from .pipeline import run_decision_engine
-
     youtube_url = (payload.get("youtube_url") or "").strip()
     if not youtube_url:
         raise HTTPException(status_code=400, detail="missing required field: youtube_url")
 
     num_clips = int(payload.get("num_clips", cfg.DEFAULT_NUM_CLIPS))
-    aspect = str(payload.get("aspect", cfg.DEFAULT_ASPECT))
-
-    # Build a campaign context (required by run_decision_engine)
-    import uuid as _uuid
     campaign_id = payload.get("campaign_id") or str(_uuid.uuid4())
     campaign_name = payload.get("campaign_name", "unknown")
+    submit = bool(payload.get("submit", False))
 
-    started = time.time()
-    try:
-        result = run_decision_engine(
-            url=youtube_url,
-            n8n_url="",  # the route posts to the webhook itself (below), only if submit is true
-            campaign_id=campaign_id,
-            campaign_name=campaign_name,
-            num_clips=min(max(num_clips, 1), cfg.MAX_NUM_CLIPS),
-            use_llm=cfg.USE_LLM,
-            use_heuristic=not cfg.USE_LLM,
-            model_size="tiny",
-            chunked=True,
-            poll_performance=False,
-        )
-    except ClipPipelineError as e:
-        log.error("clip pipeline failed for %s: %s", youtube_url, e)
-        raise HTTPException(status_code=502, detail=f"clipping failed: {e}")
-    except Exception as e:  # noqa: BLE001 - surface any unexpected error cleanly
-        log.exception("unexpected error clipping %s", youtube_url)
-        raise HTTPException(status_code=500, detail=f"unexpected error: {e}")
+    job_id = str(_uuid.uuid4())
+    with _job_lock:
+        _job_store[job_id] = {
+            "status": "processing",
+            "result": None,
+            "error": None,
+        }
 
-    manifest: Dict[str, Any] = {
-        "job_id": os.getenv("AGENT_JOB_ID", "unknown"),
-        "campaign_id": payload.get("campaign_id"),
-        "campaign_name": payload.get("campaign_name"),
+    background_tasks.add_task(
+        _process_clip_job,
+        job_id,
+        youtube_url,
+        campaign_id,
+        campaign_name,
+        num_clips,
+        submit,
+    )
+
+    log.info("job %s started: %s", job_id, youtube_url)
+    return JSONResponse(content={
+        "job_id": job_id,
+        "campaign_id": campaign_id,
+        "campaign_name": campaign_name,
         "youtube_url": youtube_url,
-        "status": "completed",
-        "num_clips": len(result["manifest"].get("clips", [])),
-        "duration": result["manifest"].get("transcript_duration", 0.0),
-        "clips": result["manifest"].get("clips", []),
-        "took_seconds": round(time.time() - started, 3),
-    }
+        "status": "processing",
+        "num_clips": num_clips,
+        "message": "processing started; poll /api/status/{job_id}",
+    })
 
-    if cfg.CAMPAIGN_WEBHOOK_URL and bool(payload.get("submit", False)):
-        _submit_to_webhook(manifest)
-        manifest["submitted"] = True
 
-    log.info("clip complete: %s -> %d clips in %.1fs", youtube_url, len(manifest["clips"]), manifest["took_seconds"])
-    return JSONResponse(content=manifest)
+@app.get("/api/status/{job_id}")
+def get_status(job_id: str) -> JSONResponse:
+    """Check the status of a clip job. Returns status and results (if completed).
+
+    Response when processing: {"status": "processing"}
+    Response when completed:  {"status": "completed", "result": {...}}
+    Response when error:      {"status": "error", "error": "..."}
+    """
+    with _job_lock:
+        job = _job_store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"job {job_id} not found")
+    return JSONResponse(content=job)
 
 
 def _submit_to_webhook(manifest: Dict[str, Any]) -> None:
