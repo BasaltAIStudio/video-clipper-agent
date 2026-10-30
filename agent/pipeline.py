@@ -572,6 +572,8 @@ def _download_video(url: str, work_dir: Path, max_duration: int = 600) -> Path:
         'fragment_retries': 3,
         'retries': 5,
     }
+    from .ytdlp_opts import apply_cookies
+    ydl_opts = apply_cookies(ydl_opts)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             ydl.download([url])
