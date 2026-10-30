@@ -42,6 +42,8 @@ def _download_only(url: str, tmpdir: Path) -> Path:
         'merge_output_format': 'mp4',
         'quiet': True,
     }
+    from .ytdlp_opts import apply_cookies
+    ydl_opts = apply_cookies(ydl_opts)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
     video_files = list(tmpdir.glob('source_video.*'))
