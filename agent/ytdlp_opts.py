@@ -12,6 +12,7 @@ Netscape cookies.txt through environment variables (store them as secrets):
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 from pathlib import Path
@@ -47,10 +48,36 @@ def _load_cookie_text() -> str:
     return raw
 
 
+def _json_to_netscape(text: str) -> str:
+    """Convert a JSON cookie export (list of cookie objects) to Netscape cookies.txt."""
+    data = json.loads(text)
+    items = data if isinstance(data, list) else data.get("cookies", [])
+    rows = ["# Netscape HTTP Cookie File"]
+    for c in items:
+        if not isinstance(c, dict) or not c.get("name") or not c.get("domain"):
+            continue
+        domain = str(c["domain"])
+        prefix = "#HttpOnly_" if c.get("httpOnly") else ""
+        sub = "TRUE" if domain.startswith(".") else "FALSE"
+        try:
+            exp = int(float(c.get("expirationDate") or c.get("expires") or 0))
+        except (TypeError, ValueError):
+            exp = 0
+        if c.get("session") or exp < 0:
+            exp = 0
+        secure = "TRUE" if c.get("secure") else "FALSE"
+        path = c.get("path") or "/"
+        rows.append(chr(9).join([prefix + domain, sub, path, secure, str(exp), str(c["name"]), str(c.get("value", ""))]))
+    return chr(10).join(rows) + chr(10)
+
+
 def apply_cookies(ydl_opts: dict) -> dict:
     """Return ydl_opts with a cookiefile set when cookie env vars are provided."""
     try:
         text = _load_cookie_text().strip()
+        if text[:1] in ("[", "{"):
+            text = _json_to_netscape(text).strip()
+            log.info("Converted JSON cookie export to Netscape format.")
     except Exception as exc:  # bad base64, etc.
         log.warning("Could not decode YouTube cookies from env: %s", exc)
         return ydl_opts
