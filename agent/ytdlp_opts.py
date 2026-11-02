@@ -21,7 +21,7 @@ log = logging.getLogger("agent.ytdlp_opts")
 
 _COOKIE_FILE = Path(os.getenv("AGENT_DATA_DIR", "/tmp/video_agent_data")) / "yt_cookies.txt"
 _CHUNK_PREFIX = "YOUTUBE_COOKIES_B64_"
-log.warning("ytdlp_opts loaded: JSON conversion and BOM stripping enabled")
+log.warning("ytdlp_opts loaded: JSON conversion, HTML guard, and Netscape validation enabled")
 
 
 def _decode_b64(value: str) -> str:
@@ -78,12 +78,22 @@ def apply_cookies(ydl_opts: dict) -> dict:
         text = _load_cookie_text().strip()
         text = text.lstrip(chr(65279) + " " + chr(9) + chr(10) + chr(13))
         log.warning("ytdlp_opts: cookie text %d chars, first char code %d", len(text), ord(text[:1] or " "))
+
+        if text.lower().startswith("<!doctype") or text.lower().startswith("<html") or text[:1] == "<":
+            log.warning("YouTube cookies env var contains HTML markup, ignoring invalid cookie data.")
+            return ydl_opts
+
         if text[:1] in ("[", "{"):
-            text = _json_to_netscape(text).strip()
-            log.info("Converted JSON cookie export to Netscape format.")
+            try:
+                text = _json_to_netscape(text).strip()
+                log.info("Converted JSON cookie export to Netscape format.")
+            except Exception as e:
+                log.warning("Failed to convert JSON cookies: %s", e)
+                return ydl_opts
     except Exception as exc:  # bad base64, etc.
         log.warning("Could not decode YouTube cookies from env: %s", exc)
         return ydl_opts
+
     if not text:
         if any(k.lower().startswith("youtube_com_") for k in os.environ):
             log.warning(
@@ -93,12 +103,32 @@ def apply_cookies(ydl_opts: dict) -> dict:
         else:
             log.info("No YouTube cookies configured (set YOUTUBE_COOKIES_B64_1..N).")
         return ydl_opts
+
+    # Sanitize lines: yt-dlp strictly expects comments or 7 tab-separated fields.
+    sanitized_lines = ["# Netscape HTTP Cookie File"]
+    cookie_count = 0
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) == 7:
+            sanitized_lines.append(line)
+            cookie_count += 1
+        elif len(parts) > 7:
+            sanitized_lines.append("\t".join(parts[:7]))
+            cookie_count += 1
+
+    if cookie_count == 0:
+        log.warning("No valid Netscape cookie lines found in YouTube cookies env var.")
+        return ydl_opts
+
     try:
         _COOKIE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _COOKIE_FILE.write_text(text + chr(10), encoding="utf-8")
+        _COOKIE_FILE.write_text("\n".join(sanitized_lines) + "\n", encoding="utf-8")
         _COOKIE_FILE.chmod(0o600)
         ydl_opts["cookiefile"] = str(_COOKIE_FILE)
-        log.info("YouTube cookies loaded: %d lines", len(text.splitlines()))
+        log.info("YouTube cookies loaded: %d valid cookies written to %s", cookie_count, _COOKIE_FILE)
     except OSError as exc:
         log.warning("Could not write YouTube cookies file: %s", exc)
     return ydl_opts
