@@ -572,6 +572,10 @@ def _download_video(url: str, work_dir: Path, max_duration: int = 600) -> Path:
         'fragment_retries': 3,
         'retries': 5,
     }
+    ydl_opts['writesubtitles'] = True
+    ydl_opts['writeautomaticsub'] = True
+    ydl_opts['subtitleslangs'] = ['en', 'en-US', 'en-GB']
+    ydl_opts['subtitlesformat'] = 'vtt'
     from .ytdlp_opts import apply_cookies
     ydl_opts = apply_cookies(ydl_opts)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -579,6 +583,14 @@ def _download_video(url: str, work_dir: Path, max_duration: int = 600) -> Path:
             ydl.download([url])
         except Exception as e:
             raise ClipError(f"Download failed: {type(e).__name__}: {e}")
+
+    for sub in work_dir.glob("source_video*.vtt"):
+        sub_dest = cache_file.parent / f"{cache_file.stem}.en.vtt"
+        try:
+            import shutil as _shutil
+            _shutil.copy2(sub, sub_dest)
+        except Exception:
+            pass
 
     for p in sorted(work_dir.glob("source_video.*")):
         if p.suffix.lower() in (".mp4", ".m4v"):

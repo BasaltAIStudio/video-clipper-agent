@@ -37,11 +37,13 @@ app = FastAPI(
 app.state.workspace = Path(cfg.OUTPUT_DIR)
 
 # Persistent job storage using SQLite
-_JOB_DB_PATH = Path(os.getenv('JOB_DB_PATH', '/tmp/video_agent_data/jobs.db'))
+_JOB_DB_DIR = Path('/app/cache') if Path('/app/cache').exists() else Path(os.getenv('AGENT_DATA_DIR', '/tmp/video_agent_data'))
+_JOB_DB_PATH = Path(os.getenv('JOB_DB_PATH', str(_JOB_DB_DIR / 'jobs.db')))
 
 def _init_job_db():
     _JOB_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with contextlib.closing(sqlite3.connect(_JOB_DB_PATH)) as conn:
+        conn.execute('PRAGMA journal_mode=WAL;')
         conn.execute('''
             CREATE TABLE IF NOT EXISTS jobs (
                 job_id TEXT PRIMARY KEY,
