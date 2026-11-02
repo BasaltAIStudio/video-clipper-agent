@@ -21,6 +21,7 @@ log = logging.getLogger("agent.ytdlp_opts")
 
 _COOKIE_FILE = Path(os.getenv("AGENT_DATA_DIR", "/tmp/video_agent_data")) / "yt_cookies.txt"
 _CHUNK_PREFIX = "YOUTUBE_COOKIES_B64_"
+log.warning("ytdlp_opts loaded: JSON conversion and BOM stripping enabled")
 
 
 def _decode_b64(value: str) -> str:
@@ -75,6 +76,8 @@ def apply_cookies(ydl_opts: dict) -> dict:
     """Return ydl_opts with a cookiefile set when cookie env vars are provided."""
     try:
         text = _load_cookie_text().strip()
+        text = text.lstrip(chr(65279) + " " + chr(9) + chr(10) + chr(13))
+        log.warning("ytdlp_opts: cookie text %d chars, first char code %d", len(text), ord(text[:1] or " "))
         if text[:1] in ("[", "{"):
             text = _json_to_netscape(text).strip()
             log.info("Converted JSON cookie export to Netscape format.")
