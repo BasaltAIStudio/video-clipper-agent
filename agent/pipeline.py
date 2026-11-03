@@ -1681,6 +1681,488 @@ class DecisionLoop:
         log.info("DecisionLoop stopped")
 
 
+import time as _time
+agent_start_time = _time.time()
+log.info("agent job started")
+
+
+agent_duration = round(_time.time() - agent_start_time, 3)
+log.info("agent job finished in %.1fs", agent_duration)
+def run_full_cycle(
+        self,
+        tab: str = "All",
+        min_cpm: float = 0.0,
+        require_platforms: List[str] = None,
+        max_campaigns: int = 5,
+        num_clips: int = DEFAULT_NUM_CLIPS,
+        use_llm: bool = True,
+    ) -> dict:
+        """
+        Complete autonomous cycle:
+        1. Scrape Content Rewards campaigns
+        2. Select campaigns worth pursuing
+        3. For each campaign: download, transcribe, highlight, render, post
+        4. Track posted videos
+        5. Monitor for payment eligibility
+        
+        Returns results dict with all cycle data.
+        """
+        cycle_start = time.time()
+        results = {
+            "campaigns_found": 0,
+            "campaigns_selected": 0,
+            "campaigns_processed": 0,
+            "clips_created": 0,
+            "clips_posted": 0,
+            "errors": [],
+            "videos_posted": [],
+            "monitoring": None,
+        }
+
+        # Step 1: Discover and select campaigns
+        log.info("=" * 60)
+        log.info("FULL CYCLE: Campaign Discovery & Selection")
+        log.info("=" * 60)
+        try:
+            selected = self.campaign_scraper.discover_and_select(
+                tab=tab,
+                min_cpm=min_cpm,
+                require_platforms=require_platforms,
+                max_campaigns=max_campaigns,
+            )
+            results["campaigns_found"] = len(selected)
+            results["campaigns_selected"] = len(selected)
+        except Exception as e:
+            log.error(f"Campaign discovery failed: {e}")
+            results["errors"].append(f"discovery: {e}")
+            selected = []
+
+        # Step 2: Process each selected campaign
+        for i, campaign in enumerate(selected):
+            campaign_id = campaign.get("campaign_id", campaign.get("url", f"campaign_{i}"))
+            campaign_name = campaign.get("name", "unknown")
+            source_video_url = campaign.get("source_video_url") or campaign.get("url")
+            cpm = campaign.get("cpm", 0.0)
+
+            if not source_video_url:
+                log.warning(f"Campaign {campaign_name} has no video URL, skipping")
+                results["errors"].append(f"{campaign_name}: no video URL")
+                continue
+
+            log.info(f"\n{'='*60}")
+            log.info(f"Processing campaign {i+1}/{len(selected)}: {campaign_name}")
+            log.info(f"{'='*60}")
+
+            try:
+                result = self.run(
+                    url=source_video_url,
+                    campaign_id=campaign_id,
+                    campaign_name=campaign_name,
+                    num_clips=num_clips,
+                    use_llm=use_llm,
+                    cpm=cpm,
+                    poll_performance=False,  # We'll monitor separately
+                )
+
+                clips = result["manifest"].get("clips", [])
+                results["campaigns_processed"] += 1
+                results["clips_created"] += len(clips)
+
+                # Step 3: Post clips to platforms
+                posted = self._post_to_platforms(clips, campaign_id, campaign_name, cpm)
+                results["clips_posted"] += len(posted)
+                results["videos_posted"].extend(posted)
+
+            except Exception as e:
+                log.error(f"Campaign {campaign_name} failed: {e}")
+                results["errors"].append(f"{campaign_name}: {e}")
+                continue
+
+        # Step 4: Monitor posted videos for payment
+        log.info("\n" + "=" * 60)
+        log.info("Video Monitoring & Payment Check")
+        log.info("=" * 60)
+        try:
+            monitoring = self.monitor_posted_videos(hours=24)
+            results["monitoring"] = monitoring
+        except Exception as e:
+            log.error(f"Monitoring failed: {e}")
+            results["errors"].append(f"monitoring: {e}")
+
+        # Step 5: Train model
+        try:
+            self.update_model()
+        except Exception as e:
+            log.warning(f"Model training skipped: {e}")
+
+        duration = time.time() - cycle_start
+        results["duration_seconds"] = round(duration, 1)
+        results["success"] = len(results["errors"]) == 0
+
+        log.info(f"\n{'='*60}")
+        log.info(f"FULL CYCLE COMPLETE in {duration:.1f}s")
+        log.info(f"  Campaigns: {results['campaigns_processed']}/{results['campaigns_selected']}")
+        log.info(f"  Clips: {results['clips_created']} created, {results['clips_posted']} posted")
+        log.info(f"  Errors: {len(results['errors'])}")
+        log.info(f"{'='*60}")
+
+        return results
+
+    # ---------------------------------------------------------------------------
+    # Platform Posting - YouTube (Composio), Instagram (Composio), TikTok (Zernio)
+    # ---------------------------------------------------------------------------
+
+    def _post_to_platforms(
+        self,
+        clips: List[Dict],
+        campaign_id: str,
+        campaign_name: str,
+        cpm: float = 0.0,
+    ) -> List[Dict]:
+        """
+        Post rendered clips to platforms:
+        - YouTube: Composio API
+        - Instagram: Composio API  
+        - TikTok: Zernio API
+        
+        Returns list of posted video records.
+        """
+        posted = []
+        for clip in clips:
+            clip_id = clip.get("clip_id", "unknown")
+            public_url = clip.get("public_path", "")
+            hook_title = clip.get("hook_title", clip.get("text", "")[:80])
+            caption = clip.get("caption", "")
+            tags = clip.get("tags", [])
+
+            if not public_url:
+                log.warning(f"Clip {clip_id} has no public URL, skipping post")
+                continue
+
+            # YouTube via Composio
+            try:
+                yt_result = self._post_youtube_composio(
+                    video_url=public_url,
+                    title=hook_title,
+                    description=caption,
+                    tags=tags,
+                    campaign_id=campaign_id,
+                )
+                if yt_result.get("success"):
+                    self.posted_videos.record_posted(
+                        clip_id=clip_id,
+                        campaign_id=campaign_id,
+                        campaign_name=campaign_name,
+                        platform="youtube",
+                        public_url=yt_result.get("video_url", public_url),
+                        video_url=public_url,
+                    )
+                    posted.append({
+                        "clip_id": clip_id,
+                        "platform": "youtube",
+                        "public_url": yt_result.get("video_url", public_url),
+                        "campaign_id": campaign_id,
+                    })
+                    log.info(f"Posted to YouTube: {clip_id}")
+            except Exception as e:
+                log.warning(f"YouTube post failed for {clip_id}: {e}")
+
+            # Instagram via Composio
+            try:
+                ig_result = self._post_instagram_composio(
+                    video_url=public_url,
+                    caption=caption,
+                    title=hook_title,
+                    hashtags=tags,
+                    campaign_id=campaign_id,
+                )
+                if ig_result.get("success"):
+                    self.posted_videos.record_posted(
+                        clip_id=clip_id,
+                        campaign_id=campaign_id,
+                        campaign_name=campaign_name,
+                        platform="instagram",
+                        public_url=ig_result.get("video_url", public_url),
+                        video_url=public_url,
+                    )
+                    posted.append({
+                        "clip_id": clip_id,
+                        "platform": "instagram",
+                        "public_url": ig_result.get("video_url", public_url),
+                        "campaign_id": campaign_id,
+                    })
+                    log.info(f"Posted to Instagram: {clip_id}")
+            except Exception as e:
+                log.warning(f"Instagram post failed for {clip_id}: {e}")
+
+            # TikTok via Zernio (Composio doesn't support TikTok)
+            try:
+                tt_result = self._post_tiktok_zernio(
+                    video_url=public_url,
+                    caption=caption,
+                    title=hook_title,
+                    hashtags=tags,
+                    campaign_id=campaign_id,
+                )
+                if tt_result.get("success"):
+                    self.posted_videos.record_posted(
+                        clip_id=clip_id,
+                        campaign_id=campaign_id,
+                        campaign_name=campaign_name,
+                        platform="tiktok",
+                        public_url=tt_result.get("video_url", public_url),
+                        video_url=public_url,
+                    )
+                    posted.append({
+                        "clip_id": clip_id,
+                        "platform": "tiktok",
+                        "public_url": tt_result.get("video_url", public_url),
+                        "campaign_id": campaign_id,
+                    })
+                    log.info(f"Posted to TikTok: {clip_id}")
+            except Exception as e:
+                log.warning(f"TikTok post failed for {clip_id}: {e}")
+
+        return posted
+
+    def _post_youtube_composio(
+        self,
+        video_url: str,
+        title: str,
+        description: str,
+        tags: List[str],
+        campaign_id: str,
+    ) -> dict:
+        """Post to YouTube via Composio API."""
+        import requests
+        url = "https://backend.composio.dev/api/v3.1/tools/execute/YOUTUBE_UPLOAD_VIDEO"
+        payload = {
+            "user_id": "default",
+            "arguments": {
+                "title": title,
+                "description": description,
+                "tags": [t.replace("#", "") for t in tags],
+                "categoryId": "22",
+                "privacyStatus": "public",
+                "videoFilePath": {
+                    "name": f"{campaign_id}.mp4",
+                    "mimetype": "video/mp4",
+                    "url": video_url,
+                },
+            },
+        }
+        resp = requests.post(
+            url,
+            json=payload,
+            headers={
+                "x-api-key": f"{{ $env.COMPOSIO_API_KEY }}",
+                "Content-Type": "application/json",
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return {"success": True, "video_url": video_url, "response": resp.json()}
+
+    def _post_instagram_composio(
+        self,
+        video_url: str,
+        caption: str,
+        title: str,
+        hashtags: List[str],
+        campaign_id: str,
+    ) -> dict:
+        """Post to Instagram via Composio API."""
+        import requests
+        url = "https://backend.composio.dev/api/v3.1/tools/execute/INSTAGRAM_POST_IG_USER_MEDIA"
+        payload = {
+            "user_id": "default",
+            "arguments": {
+                "caption": caption,
+                "media_url": video_url,
+                "title": title,
+            },
+        }
+        resp = requests.post(
+            url,
+            json=payload,
+            headers={
+                "x-api-key": f"{{ $env.COMPOSIO_API_KEY }}",
+                "Content-Type": "application/json",
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return {"success": True, "video_url": video_url, "response": resp.json()}
+
+    def _post_tiktok_zernio(
+        self,
+        video_url: str,
+        caption: str,
+        title: str,
+        hashtags: List[str],
+        campaign_id: str,
+    ) -> dict:
+        """Post to TikTok via Zernio API."""
+        import requests
+        url = "https://zernio.com/api/v1/posts"
+        payload = {
+            "platform": "tiktok",
+            "videoUrl": video_url,
+            "caption": caption,
+            "title": title,
+            "hashtags": hashtags,
+            "apiKey": "$env.ZERONIO_API_KEY",
+        }
+        resp = requests.post(
+            url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return {"success": True, "video_url": video_url, "response": resp.json()}
+
+    def _post_to_webhook(self, payload: dict):
+        """Post results to configured webhook (n8n or other)."""
+        import requests
+        if not self.webhook_url:
+            log.warning("No webhook URL configured, skipping webhook post")
+            return
+        resp = requests.post(
+            self.webhook_url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        log.info(f"Webhook posted: {resp.status_code}")
+
+    def update_model(self) -> bool:
+        """
+        Update the model with the latest performance data. (FIX #1)
+
+        Trains a real neural network on actual clip features -> retention_score
+        using LearningLoop.train_performance_model(). Also trains the
+        retention curve predictor on accumulated retention curve data (FIX #4).
+
+        Returns True if training completed, False if insufficient data.
+        """
+        features, labels, metadata = self.perf_recorder.get_training_data(
+            min_views=5, min_earnings=0.0
+        )
+
+        if len(features) < 10:
+            log.info(f"Not enough performance data yet ({len(features)} clips, need 10+)")
+            return False
+
+        log.info(f"Training performance model on {len(features)} clips with actual data...")
+        model_path = self.learning_loop.train_performance_model(epochs=50, lr=1e-3)
+        if model_path:
+            log.info(f"Performance model saved to {model_path}")
+        else:
+            log.warning("Performance model training skipped (insufficient data)")
+
+        self.retention_predictor.train_from_performance_db(self.perf_recorder.db_path)
+
+        log.info(f"Trained on {len(features)} clips, "
+                 f"avg retention_score={sum(labels)/len(labels):.1f}")
+        return True
+
+    def get_model_summary(self) -> dict:
+        """Get a summary of the learned model."""
+        data = self.perf_recorder.get_training_data(min_views=1)
+        return {
+            "num_clips_recorded": len(data[0]),
+            "total_views": sum(m['views'] for m in data[2]),
+            "total_earnings": sum(m['earnings'] for m in data[2]),
+            "avg_retention_score": sum(data[1]) / len(data[1]) if data[1] else 0,
+        }
+
+    def get_ab_test_results(self, campaign_id: str) -> dict:
+        """
+        Get A/B test results comparing highlight selection methods. (FIX #3)
+
+        Returns performance comparison across methods (llm, heuristic, jev, learned).
+        """
+        return self.highlight_selector.evaluate_methods(campaign_id)
+
+
+class DecisionLoop:
+    """
+    Continuous decision loop that runs the agent autonomously.
+
+    Cycle:
+      1. Pull next campaign from queue
+      2. Run DecisionEngine (submit clips)
+      3. Wait for performance data (poll Content Rewards)
+      4. Train model on actual performance
+      5. Repeat with improved model
+
+    Runs until explicitly stopped or the queue is exhausted.
+    """
+
+    def __init__(
+        self,
+        engine: DecisionEngine,
+        campaign_queue: List[Dict],
+        poll_interval: int = 3600,
+        max_cycles: Optional[int] = None,
+    ):
+        self.engine = engine
+        self.campaign_queue = campaign_queue
+        self.poll_interval = poll_interval
+        self.max_cycles = max_cycles
+        self.cycle_count = 0
+        self.running = False
+
+    def run_continuous(self):
+        """Run the decision loop continuously."""
+        self.running = True
+        log.info(f"DecisionLoop starting with {len(self.campaign_queue)} campaigns")
+
+        while self.running:
+            if self.max_cycles and self.cycle_count >= self.max_cycles:
+                log.info(f"Max cycles ({self.max_cycles}) reached, stopping")
+                break
+
+            if not self.campaign_queue:
+                log.info("Campaign queue empty, waiting...")
+                time.sleep(self.poll_interval)
+                continue
+
+            campaign = self.campaign_queue.pop(0)
+            self.cycle_count += 1
+
+            log.info(f"=== Cycle {self.cycle_count}: "
+                     f"{campaign.get('name', campaign.get('campaign_id', 'unknown'))} ===")
+
+            try:
+                result = self.engine.run(
+                    url=campaign["url"],
+                    campaign_id=campaign["campaign_id"],
+                    campaign_name=campaign.get("campaign_name", campaign["campaign_id"]),
+                    num_clips=campaign.get("num_clips", DEFAULT_NUM_CLIPS),
+                    use_llm=campaign.get("use_llm", True),
+                    n8n_url=self.engine.n8n_url,
+                    model_size=campaign.get("model_size", "tiny"),
+                    chunked=campaign.get("chunked", True),
+                    poll_performance=True,
+                )
+
+                log.info(f"Cycle {self.cycle_count} complete: {result['stats'].get_summary()}")
+
+            except Exception as e:
+                log.error(f"Cycle {self.cycle_count} failed: {e}")
+
+            if self.running:
+                time.sleep(self.poll_interval)
+
+    def stop(self):
+        """Stop the decision loop."""
+        self.running = False
+        log.info("DecisionLoop stopped")
+
+
 def run_decision_engine(
     url: str,
     n8n_url: str,
