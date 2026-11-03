@@ -532,8 +532,528 @@ def api_poll() -> Dict[str, Any]:
     return {"processed": processed, "status": "ok"}
 
 
+
+
 # ---------------------------------------------------------------------------
-# Full Autonomous Cycle - Agent handles everything internally
+# Modular Pipeline Stages
+# Each stage is a lightweight HTTP endpoint that can be called independently
+# by the n8n workflow. State is persisted in SQLite and files.
+# ---------------------------------------------------------------------------
+
+from .pipeline import DecisionEngine, IdempotencyCache, PostedVideosTracker, PerformanceRecorder
+from .clipper import ClipError, render_clip, build_ass_subtitles
+from .transcriber import transcribe, get_model
+from .highlight_selection import UnifiedHighlightSelector
+from .heuristic import score_segments
+from .llm import prompt_highlights
+from .llm_retry import LLMClient, LLMProvider, RetryConfig
+
+# ---------------------------------------------------------------------------
+# Stage 1: Download
+# ---------------------------------------------------------------------------
+@app.post("/api/stage/download")
+def stage_download(payload: Dict[str, Any]) -> JSONResponse:
+    """Download a YouTube video and return the local file path.
+
+    Input:  { "youtube_url": "https://...", "campaign_id": "...", "campaign_name": "...", "num_clips": 3 }
+    Output: { "video_path": "/tmp/.../video.mp4", "duration": 123.4, "campaign_id": "...", "campaign_name": "...", "num_clips": 3 }
+    """
+    youtube_url = (payload.get("youtube_url") or "").strip()
+    if not youtube_url:
+        raise HTTPException(status_code=400, detail="missing required field: youtube_url")
+
+    campaign_id = payload.get("campaign_id") or str(_uuid.uuid4())
+    campaign_name = payload.get("campaign_name", "unknown")
+    num_clips = min(int(payload.get("num_clips", cfg.DEFAULT_NUM_CLIPS)), cfg.MAX_NUM_CLIPS)
+    max_download_seconds = int(payload.get("max_download_seconds", cfg.DEFAULT_MAX_DOWNLOAD_SECONDS))
+
+    job_id = str(_uuid.uuid4())
+    _store_job(job_id, "downloading", result={"campaign_id": campaign_id}, error=None)
+
+    started = time.time()
+    try:
+        engine = DecisionEngine(
+            n8n_url="",
+            cache=IdempotencyCache(),
+            perf_recorder=PerformanceRecorder(),
+            posted_videos_tracker=PostedVideosTracker(),
+            highlight_selector=UnifiedHighlightSelector(),
+            webhook_url=cfg.CAMPAIGN_WEBHOOK_URL,
+        )
+        video_path = engine.download(
+            url=youtube_url,
+            campaign_id=campaign_id,
+            campaign_name=campaign_name,
+            num_clips=num_clips,
+            max_download_seconds=max_download_seconds,
+        )
+
+        manifest = {
+            "job_id": job_id,
+            "campaign_id": campaign_id,
+            "campaign_name": campaign_name,
+            "video_path": str(video_path),
+            "duration": engine._get_video_duration(video_path),
+            "num_clips": num_clips,
+            "status": "completed",
+            "took_seconds": round(time.time() - started, 3),
+        }
+
+        with _job_lock:
+            _store_job(job_id, "completed", result=manifest, error=None)
+        log.info("stage download complete: %s -> %.1fs", job_id, manifest["took_seconds"])
+        return JSONResponse(content=manifest)
+
+    except Exception as e:
+        log.exception("stage download failed")
+        with _job_lock:
+            _store_job(job_id, "error", result=None, error=f"download failed: {type(e).__name__}: {e}")
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: Transcribe
+# ---------------------------------------------------------------------------
+@app.post("/api/stage/transcribe")
+def stage_transcribe(payload: Dict[str, Any]) -> JSONResponse:
+    """Transcribe audio from a video file.
+
+    Input:  { "video_path": "/tmp/.../video.mp4", "model_size": "tiny", "campaign_id": "..." }
+    Output: { "transcript": [...], "duration": 123.4, "transcription_duration": 45.2, "campaign_id": "..." }
+    """
+    video_path = payload.get("video_path") or ""
+    if not video_path:
+        raise HTTPException(status_code=400, detail="missing required field: video_path")
+
+    model_size = payload.get("model_size", "tiny")
+    campaign_id = payload.get("campaign_id") or str(_uuid.uuid4())
+    job_id = str(_uuid.uuid4())
+
+    _store_job(job_id, "transcribing", result={"campaign_id": campaign_id}, error=None)
+
+    started = time.time()
+    try:
+        video_path = Path(video_path)
+        if not video_path.exists():
+            raise HTTPException(status_code=400, detail=f"video not found: {video_path}")
+
+        model = get_model(model_size)
+        transcript = transcribe(
+            audio=str(video_path),
+            model=model,
+            language="en",
+            word_timestamps=True,
+            vad_filter=True,
+            beam_size=5,
+        )
+
+        # Flatten generator into list for JSON serialization
+        transcript_list = []
+        for segment in transcript:
+            transcript_list.append({
+                "start": segment.start,
+                "end": segment.end,
+                "text": segment.text,
+            })
+
+        manifest = {
+            "job_id": job_id,
+            "campaign_id": campaign_id,
+            "transcript": transcript_list,
+            "duration": transcript_list[-1]["end"] if transcript_list else 0.0,
+            "transcription_duration": round(time.time() - started, 3),
+            "status": "completed",
+        }
+
+        with _job_lock:
+            _store_job(job_id, "completed", result=manifest, error=None)
+        log.info("stage transcribe complete: %.1fs", time.time() - started)
+        return JSONResponse(content=manifest)
+
+    except Exception as e:
+        log.exception("stage transcribe failed")
+        with _job_lock:
+            _store_job(job_id, "error", result=None, error=f"transcribe failed: {type(e).__name__}: {e}")
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: Highlights
+# ---------------------------------------------------------------------------
+@app.post("/api/stage/highlights")
+def stage_highlights(payload: Dict[str, Any]) -> JSONResponse:
+    """Select highlight windows from transcript.
+
+    Input:  { "transcript": [...], "num_clips": 3, "campaign_id": "...", "model_size": "tiny" }
+    Output: { "highlights": [{ "start": 10.5, "end": 18.2, "text": "..." }], "num_clips": 3, "status": "completed" }
+    """
+    transcript = payload.get("transcript") or []
+    num_clips = min(int(payload.get("num_clips", cfg.DEFAULT_NUM_CLIPS)), cfg.MAX_NUM_CLIPS)
+    campaign_id = payload.get("campaign_id") or str(_uuid.uuid4())
+    model_size = payload.get("model_size", "tiny")
+    job_id = str(_uuid.uuid4())
+
+    _store_job(job_id, "highlights", result={"campaign_id": campaign_id}, error=None)
+
+    started = time.time()
+    try:
+        # Build segments list from transcript
+        segments = []
+        for item in transcript:
+            try:
+                segments.append({
+                    "start": float(item.get("start", 0)),
+                    "end": float(item.get("end", 0)),
+                    "text": str(item.get("text", "")),
+                })
+            except (ValueError, TypeError):
+                continue
+
+        # Use LLM if USE_LLM is True, otherwise use heuristic
+        use_llm = cfg.USE_LLM
+
+        if use_llm and segments:
+            # Load LLM client
+            provider = LLMProvider.OPENROUTER if cfg.USE_LLM else LLMProvider.HEURISTIC
+            client = LLMClient(
+                provider=provider,
+                base_url=cfg.LLM_BASE_URL,
+                api_key=cfg.LLM_API_KEY,
+                model=cfg.LLM_MODEL,
+                max_retries=cfg.LLM_MAX_RETRIES,
+            )
+            try:
+                highlights = prompt_highlights(
+                    segments=segments,
+                    num_clips=num_clips,
+                    client=client,
+                    model=model_size,
+                )
+            except Exception as e:
+                log.warning(f"LLM highlight selection failed: {e}, falling back to heuristic")
+                highlights = None
+        else:
+            highlights = None
+
+        if highlights is None:
+            # Fallback: use heuristic scoring
+            scores = score_segments(segments)
+            highlights = []
+            for i, (start, end, score) in enumerate(scores[:num_clips]):
+                highlights.append({
+                    "start": start,
+                    "end": end,
+                    "score": float(score),
+                    "text": segments[i].get("text", "") if i < len(segments) else "",
+                })
+
+        manifest = {
+            "job_id": job_id,
+            "campaign_id": campaign_id,
+            "highlights": highlights,
+            "num_clips": len(highlights),
+            "transcript_duration": segments[-1]["end"] if segments else 0.0,
+            "selection_method": "llm" if use_llm else "heuristic",
+            "selection_duration": round(time.time() - started, 3),
+            "status": "completed",
+        }
+
+        with _job_lock:
+            _store_job(job_id, "completed", result=manifest, error=None)
+        log.info("stage highlights complete: %s", manifest["selection_method"])
+        return JSONResponse(content=manifest)
+
+    except Exception as e:
+        log.exception("stage highlights failed")
+        with _job_lock:
+            _store_job(job_id, "error", result=None, error=f"highlights failed: {type(e).__name__}: {e}")
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: Render
+# ---------------------------------------------------------------------------
+@app.post("/api/stage/render")
+def stage_render(payload: Dict[str, Any]) -> JSONResponse:
+    """Render video clips from highlight windows.
+
+    Input:  { "video_path": "/tmp/.../video.mp4", "highlights": [...], "campaign_id": "...", "num_clips": 3 }
+    Output: { "clips": [{ "clip_id": "...", "start": 10.5, "end": 18.2, "path": "/tmp/.../clip.mp4", "size": 1234567 }], "status": "completed" }
+    """
+    video_path = payload.get("video_path") or ""
+    highlights = payload.get("highlights") or []
+    if not video_path or not highlights:
+        raise HTTPException(status_code=400, detail="missing video_path or highlights")
+
+    campaign_id = payload.get("campaign_id") or str(_uuid.uuid4())
+    num_clips = min(int(payload.get("num_clips", cfg.DEFAULT_NUM_CLIPS)), cfg.MAX_NUM_CLIPS)
+    aspect = payload.get("aspect", cfg.DEFAULT_ASPECT)
+    job_id = str(_uuid.uuid4())
+
+    _store_job(job_id, "rendering", result={"campaign_id": campaign_id}, error=None)
+
+    started = time.time()
+    try:
+        video_path = Path(video_path)
+        if not video_path.exists():
+            raise HTTPException(status_code=400, detail=f"video not found: {video_path}")
+
+        output_dir = cfg.OUTPUT_DIR / campaign_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        clips = []
+        for i, hl in enumerate(highlights[:num_clips]):
+            clip_id = f"{campaign_id}_clip_{i:03d}"
+            clip_path = output_dir / f"{clip_id}.mp4"
+
+            try:
+                render_clip(
+                    source_path=video_path,
+                    start=float(hl.get("start", 0)),
+                    end=float(hl.get("end", 0)),
+                    output_path=clip_path,
+                    aspect=aspect,
+                )
+                clips.append({
+                    "clip_id": clip_id,
+                    "start": float(hl.get("start", 0)),
+                    "end": float(hl.get("end", 0)),
+                    "path": str(clip_path),
+                    "size": clip_path.stat().st_size if clip_path.exists() else 0,
+                    "status": "rendered",
+                })
+            except Exception as e:
+                log.warning(f"render failed for {clip_id}: {e}")
+                clips.append({
+                    "clip_id": clip_id,
+                    "start": float(hl.get("start", 0)),
+                    "end": float(hl.get("end", 0)),
+                    "path": str(clip_path),
+                    "size": 0,
+                    "status": "failed",
+                    "error": str(e),
+                })
+
+        manifest = {
+            "job_id": job_id,
+            "campaign_id": campaign_id,
+            "clips": clips,
+            "num_clips": len(clips),
+            "render_duration": round(time.time() - started, 3),
+            "status": "completed",
+        }
+
+        with _job_lock:
+            _store_job(job_id, "completed", result=manifest, error=None)
+        log.info("stage render complete: %d clips", len(clips))
+        return JSONResponse(content=manifest)
+
+    except Exception as e:
+        log.exception("stage render failed")
+        with _job_lock:
+            _store_job(job_id, "error", result=None, error=f"render failed: {type(e).__name__}: {e}")
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Stage 5: Submit
+# ---------------------------------------------------------------------------
+@app.post("/api/stage/submit")
+def stage_submit(payload: Dict[str, Any]) -> JSONResponse:
+    """Submit rendered clips to platforms (YouTube, Instagram, TikTok).
+
+    Input:  { "clips": [...], "campaign_id": "...", "campaign_name": "...", "campaign_url": "..." }
+    Output: { "posted": [...], "status": "completed" }
+    """
+    clips = payload.get("clips") or []
+    campaign_id = payload.get("campaign_id") or str(_uuid.uuid4())
+    campaign_name = payload.get("campaign_name", "unknown")
+    if not clips:
+        raise HTTPException(status_code=400, detail="missing clips")
+
+    job_id = str(_uuid.uuid4())
+    _store_job(job_id, "submitting", result={"campaign_id": campaign_id}, error=None)
+
+    started = time.time()
+    try:
+        engine = DecisionEngine(
+            n8n_url="",
+            cache=IdempotencyCache(),
+            perf_recorder=PerformanceRecorder(),
+            posted_videos_tracker=PostedVideosTracker(),
+            highlight_selector=UnifiedHighlightSelector(),
+            webhook_url=cfg.CAMPAIGN_WEBHOOK_URL,
+        )
+        engine.posted_videos = PostedVideosTracker()
+
+        posted = engine._post_to_platforms(
+            clips=clips,
+            campaign_id=campaign_id,
+            campaign_name=campaign_name,
+            cpm=0.0,
+        )
+
+        manifest = {
+            "job_id": job_id,
+            "campaign_id": campaign_id,
+            "campaign_name": campaign_name,
+            "posted": posted,
+            "submit_duration": round(time.time() - started, 3),
+            "status": "completed",
+        }
+
+        with _job_lock:
+            _store_job(job_id, "completed", result=manifest, error=None)
+        log.info("stage submit complete: %d posts", len(posted))
+        return JSONResponse(content=manifest)
+
+    except Exception as e:
+        log.exception("stage submit failed")
+        with _job_lock:
+            _store_job(job_id, "error", result=None, error=f"submit failed: {type(e).__name__}: {e}")
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Pipeline Orchestration
+# ---------------------------------------------------------------------------
+@app.post("/api/pipeline")
+def pipeline_orchestrator(payload: Dict[str, Any]) -> JSONResponse:
+    """Run the full pipeline from download through submit, staging each step.
+
+    Input:  { "youtube_url": "...", "campaign_id": "...", "campaign_name": "...", "num_clips": 3 }
+    Output: { "download": {...}, "transcribe": {...}, "highlights": {...}, "render": {...}, "submit": {...} }
+    """
+    job_id = str(_uuid.uuid4())
+    youtube_url = (payload.get("youtube_url") or "").strip()
+    campaign_id = payload.get("campaign_id") or str(_uuid.uuid4())
+    campaign_name = payload.get("campaign_name", "unknown")
+    num_clips = min(int(payload.get("num_clips", cfg.DEFAULT_NUM_CLIPS)), cfg.MAX_NUM_CLIPS)
+    aspect = payload.get("aspect", cfg.DEFAULT_ASPECT)
+    max_download_seconds = int(payload.get("max_download_seconds", cfg.DEFAULT_MAX_DOWNLOAD_SECONDS))
+
+    _store_job(job_id, "queued", result=None, error=None)
+
+    result = {
+        "job_id": job_id,
+        "campaign_id": campaign_id,
+        "campaign_name": campaign_name,
+        "stages": {},
+        "status": "running",
+        "num_clips": num_clips,
+        "aspect": aspect,
+    }
+
+    started = time.time()
+
+    try:
+        # Stage 1: Download
+        log.info("pipeline: stage download...")
+        resp = requests.post(
+            f"{cfg.AGENT_HOST}/api/stage/download",
+            json={
+                "youtube_url": youtube_url,
+                "campaign_id": campaign_id,
+                "campaign_name": campaign_name,
+                "num_clips": num_clips,
+                "max_download_seconds": max_download_seconds,
+            },
+            timeout=cfg.DEFAULT_MAX_DOWNLOAD_SECONDS,
+        )
+        resp.raise_for_status()
+        download_result = resp.json()
+        result["stages"]["download"] = download_result
+        log.info("pipeline: download completed in %.1fs", download_result.get("took_seconds", 0))
+
+        # Stage 2: Transcribe
+        log.info("pipeline: stage transcribe...")
+        resp = requests.post(
+            f"{cfg.AGENT_HOST}/api/stage/transcribe",
+            json={
+                "video_path": download_result["video_path"],
+                "campaign_id": campaign_id,
+                "model_size": "tiny",
+            },
+            timeout=300,
+        )
+        resp.raise_for_status()
+        transcribe_result = resp.json()
+        result["stages"]["transcribe"] = transcribe_result
+        log.info("pipeline: transcribe completed in %.1fs", transcribe_result.get("transcription_duration", 0))
+
+        # Stage 3: Highlights
+        log.info("pipeline: stage highlights...")
+        resp = requests.post(
+            f"{cfg.AGENT_HOST}/api/stage/highlights",
+            json={
+                "transcript": transcribe_result.get("transcript", []),
+                "num_clips": num_clips,
+                "campaign_id": campaign_id,
+                "model_size": "tiny",
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        highlights_result = resp.json()
+        result["stages"]["highlights"] = highlights_result
+        log.info("pipeline: highlights completed in %.1fs", highlights_result.get("selection_duration", 0))
+
+        # Stage 4: Render
+        log.info("pipeline: stage render...")
+        resp = requests.post(
+            f"{cfg.AGENT_HOST}/api/stage/render",
+            json={
+                "video_path": download_result["video_path"],
+                "highlights": highlights_result.get("highlights", []),
+                "campaign_id": campaign_id,
+                "num_clips": num_clips,
+                "aspect": aspect,
+            },
+            timeout=300,
+        )
+        resp.raise_for_status()
+        render_result = resp.json()
+        result["stages"]["render"] = render_result
+        log.info("pipeline: render completed in %.1fs", render_result.get("render_duration", 0))
+
+        # Stage 5: Submit
+        log.info("pipeline: stage submit...")
+        resp = requests.post(
+            f"{cfg.AGENT_HOST}/api/stage/submit",
+            json={
+                "clips": render_result.get("clips", []),
+                "campaign_id": campaign_id,
+                "campaign_name": campaign_name,
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        submit_result = resp.json()
+        result["stages"]["submit"] = submit_result
+        log.info("pipeline: submit completed in %.1fs", submit_result.get("submit_duration", 0))
+
+        result["status"] = "completed"
+        result["total_duration"] = round(time.time() - started, 3)
+        _store_job(job_id, "completed", result=result, error=None)
+
+        return JSONResponse(content=result)
+
+    except requests.exceptions.RequestException as e:
+        log.exception("pipeline stage failed")
+        result["status"] = "error"
+        result["error"] = f"stage failed: {type(e).__name__}: {e}"
+        _store_job(job_id, "error", result=result, error=result["error"])
+        raise
+
+    except Exception as e:
+        log.exception("pipeline failed")
+        result["status"] = "error"
+        result["error"] = f"pipeline failed: {type(e).__name__}: {e}"
+        _store_job(job_id, "error", result=result, error=result["error"])
+        raise
+
+
+ - Agent handles everything internally
 # ---------------------------------------------------------------------------
 
 @app.post("/api/run-cycle")
