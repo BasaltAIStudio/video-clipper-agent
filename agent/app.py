@@ -331,7 +331,10 @@ def upload_test(file: UploadFile = File(...)) -> Dict[str, Any]:
 def api_debug_pipeline() -> Dict[str, Any]:
     """Run each pipeline step individually to find which one fails."""
     results = {}
-    video_path = Path("/c/Users/lenovo/video-agent/clips-studio/assets/outro/outro2_1080x1920_30_yuv420p_48000_2.mp4")
+    video_path = Path("/tmp/debug_sample.mp4")
+    if not video_path.exists():
+        import urllib.request
+        urllib.request.urlretrieve("https://www.w3schools.com/html/mov_bbb.mp4", video_path)
 
     # Step 1: Model loading
     try:
