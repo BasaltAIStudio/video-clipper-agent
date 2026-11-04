@@ -1,12 +1,16 @@
-# Video Clipper Agent — Snap Deploy / Docker image.
+# Video Clipper Agent — Split Architecture (Render API + Miget Worker)
 #
-# Build:
-#   docker build -t video-clipper .
-# Run:
-#   docker run --rm -p 8000:8000 --name clipper video-clipper
+# Render: Runs agent.server:app (API + queue management)
+# Miget: Runs agent.worker (compute worker)
 #
-# Snap Deploy (the user's Docker service) builds this image from the repo and
-# deploys it as a container; each clip job is a single HTTP call to /api/clip.
+# Environment variables (set via Render/Miget service config):
+#   RENDER_URL - Base URL of Render API (only needed by Miget worker)
+#   JOB_DB_PATH - Path to shared SQLite DB
+#   AGENT_WORK_DIR - Working directory for jobs
+#   AGENT_CACHE_DIR - Cache directory for downloads/transcripts
+#   LOCAL_WHISPER_MODEL - Whisper model size (tiny/en recommended for free tier)
+#   LOCAL_WHISPER_COMPUTE_TYPE - CPU speed optimization (default: int8)
+#   LOCAL_WHISPER_DEVICE - CPU/GPU (default: cpu for free tier)
 
 FROM python:3.12-slim
 
@@ -29,30 +33,26 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the application package (runs as `python -m agent.run`).
+# Copy the application package
 COPY agent /app/agent
 
-# Writable volumes (persisted across restarts; bind-mountable on Snap Deploy).
-RUN mkdir -p /app/output /app/work /app/uploads /app/.cache/hf /app/cache && \
-    chown -R nobody:nogroup /app/output /app/work /app/uploads /app/.cache/hf /app/cache 2>/dev/null || true
+# Make worker entrypoint executable
+RUN chmod +x /app/agent/worker.py
+
+# Writable volumes (persisted across restarts)
+RUN mkdir -p /app/output /app/work /app/cache && \
+    chown -R nobody:nogroup /app /tmp 2>/dev/null || true
 
 USER nobody
 
 ENV AGENT_DATA_DIR=/tmp/video_agent_data \
     AGENT_HOST=0.0.0.0 \
-    AGENT_PORT=8000 \
-    DEFAULT_ASPECT=9:16 \
-    DEFAULT_NUM_CLIPS=3 \
-    MAX_NUM_CLIPS=10
+    AGENT_PORT=8000
 
-# LLM keys are injected by Snap Deploy secrets / the host environment; see
-# .env.example. None of these are baked into this image.
-
-EXPOSE 8000
-
-# Extended health check for slower model loading
+# Health check with extended start-period for model loading
 HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
     CMD curl -fsS http://localhost:${PORT:-8000}/health >/dev/null || exit 1
 
-# The agent package uses relative imports, so run as `python -m agent.run`
-CMD ["python", "-m", "agent.run"]
+# Render uses: python -m uvicorn agent.server:app
+# Miget uses: python -m uvicorn agent.worker:app (default)
+CMD ["python", "-m", "uvicorn", "agent.server:app", "--host", "0.0.0.0", "--port", "8000"]
