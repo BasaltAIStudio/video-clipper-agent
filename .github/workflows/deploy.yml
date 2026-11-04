@@ -1,1 +1,17 @@
-Fix workflow to deploy Render
+name: Render Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render Deploy
+        run: |
+          echo "Triggering Render deploy..."
+          curl -X POST https://api.render.com/v1/services/srv-dbfevpfavr4c73dta22g/deploys \
+            -H "Authorization: Bearer rnd_AUCKrlkTQdhoLhfGCIIN1SzwxdCE" \
+            -H "Content-Type: application/json" \
+            -d '{}'
