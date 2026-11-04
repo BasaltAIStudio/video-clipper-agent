@@ -33,6 +33,19 @@ from .controller import get_candidate_highlights
 from .transcriber import transcribe, get_model
 from .ytdlp_opts import apply_cookies, YTDLP_COOKIES_B64
 
+
+# Imports for Scrapling - only used if available (lazy import to avoid startup issues)
+def _get_scrapling():
+    """Lazy import Scrapling to avoid startup failures."""
+    try:
+        from scrapling.fetchers import StealthySession
+        return StealthySession, True
+    except ImportError:
+        return None, False
+
+StealthySession, SCRAPLING_AVAILABLE = _get_scrapling()
+
+
 # Imports for Scrapling - only used if available
 try:
     from scrapling.fetchers import StealthySession
@@ -52,9 +65,9 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Download helper using Scrapling for anti-bot bypass
 # ---------------------------------------------------------------------------
-def _download_video_scrapling(url: str, work_dir: Path, max_duration: int = 600) -> Path:
-    """
-    Download video using Scrapling's StealthySession for anti-bot bypass.
+def _download_video(url: str, work_dir: Path, max_duration: int = 600) -> Path:
+    """Download video using Scrapling's StealthySession for anti-bot bypass.
+    
     Uses browser automation + cookies to avoid YouTube's bot detection.
     Falls back to yt-dlp if Scrapling is not available.
     """
@@ -66,21 +79,13 @@ def _download_video_scrapling(url: str, work_dir: Path, max_duration: int = 600)
 
     log.info(f"Downloading video (max {max_duration}s, 1080p): {url}")
 
+    # Try Scrapling first if available
     if SCRAPLING_AVAILABLE and StealthySession:
-        # Try Scrapling first - browser automation + cookies
         try:
-            # Read cookies from ytdlp_opts
-            from .ytdlp_opts import apply_cookies
-            import yt_dlp
-
             # First, fetch the YouTube page with Scrapling to get cookies
             with StealthySession(headless=True, solve_cloudflare=False) as session:
                 page = session.fetch(url, network_idle=True)
                 log.info(f"Scrapling fetched page: {page.status}")
-
-                # Extract cookies from the page
-                cookies = {}
-                yt_id = url.split('v=')[-1].split('&')[0]
 
                 # Get the video info using yt-dlp (with Scrapling's browser fingerprint)
                 ydl_opts = {
@@ -98,6 +103,7 @@ def _download_video_scrapling(url: str, work_dir: Path, max_duration: int = 600)
                 }
 
                 # Apply cookies from ytdlp_opts
+                from .ytdlp_opts import apply_cookies
                 ydl_opts = apply_cookies(ydl_opts)
 
                 # Use the cookies for the download
@@ -143,6 +149,7 @@ def _download_video_scrapling(url: str, work_dir: Path, max_duration: int = 600)
     ydl_opts['writeautomaticsub'] = True
     ydl_opts['subtitleslangs'] = ['en', 'en-US', 'en-GB']
     ydl_opts['subtitlesformat'] = 'vtt'
+    from .ytdlp_opts import apply_cookies
     ydl_opts = apply_cookies(ydl_opts)
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
