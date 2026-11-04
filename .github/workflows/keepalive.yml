@@ -1,16 +1,1 @@
-name: Keep-Alive Midget Agent
-
-on:
-  # Ping the agent's /health endpoint every 10 min so the
-  # Midget free tier (sleeps after 15 min of inactivity)
-  # never has a chance to go to sleep.
-  schedule:
-    - cron: '*/10 * * * *'
-  workflow_dispatch:
-
-jobs:
-  keepalive:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Ping Midget health endpoint
-        run: curl -fsS https://video-clipper-agent-wx2yn.us-east-1.migetapp.com/health
+# Trigger auto-deploy
