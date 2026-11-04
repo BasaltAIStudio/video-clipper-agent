@@ -55,4 +55,4 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
 
 # Render uses: python -m uvicorn agent.server:app
 # Miget uses: python -m uvicorn agent.worker:app (default)
-CMD ["python", "-m", "uvicorn", "agent.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "agent.server:app", "--host", "0.0.0.0", "--port", "${PORT:-8000}"]
