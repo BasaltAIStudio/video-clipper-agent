@@ -1,1 +1,1 @@
-# Auto-deploy trigger: Update to agent.server:app on 2026-11-04
+Update: Use agent.server:app with auto-deploy trigger
