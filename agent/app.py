@@ -230,6 +230,91 @@ def get_status(job_id: str) -> JSONResponse:
     if job is None:
         raise HTTPException(status_code=404, detail=f"job {job_id} not found")
     return JSONResponse(content=job)
+# ===== Queue endpoints for Miget worker integration =====
+
+@app.get("/api/queue")
+def get_queue(limit: int = 10):
+    """Get pending jobs for Miget workers to claim."""
+    with contextlib.closing(_get_conn()) as conn:
+        rows = conn.execute(
+            'SELECT job_id, campaign_id, campaign_name, youtube_url, aspect, '
+            'num_clips, status, current_stage, progress, created_at, updated_at '
+            'FROM jobs WHERE status = ? ORDER BY created_at LIMIT ?',
+            ('pending', limit),
+        ).fetchall()
+    jobs = []
+    for row in rows:
+        jobs.append({
+            'job_id': row[0], 'campaign_id': row[1], 'campaign_name': row[2],
+            'youtube_url': row[3], 'aspect': row[4], 'num_clips': row[5],
+            'status': row[6], 'stage': row[7], 'progress': row[8],
+            'created_at': row[9], 'updated_at': row[10],
+        })
+    return {"jobs": jobs, "count": len(jobs)}
+
+@app.post("/api/dispatch")
+def dispatch_job(job_id: str, agent_url: str = "miget-worker"):
+    """Claim a job for processing (Miget worker calls this)."""
+    with contextlib.closing(_get_conn()) as conn:
+        conn.execute(
+            'UPDATE jobs SET status = ?, current_stage = ?, progress = ?, '
+            'updated_at = ? WHERE job_id = ? AND status = ?',
+            ('dispatched', 'download', 0, time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+             job_id, 'pending'),
+        )
+        conn.commit()
+        row = conn.execute(
+            'SELECT * FROM jobs WHERE job_id = ?', (job_id,)
+        ).fetchone()
+    if row:
+        job = dict(row)
+        job.pop('result', None)
+        job.pop('error', None)
+        job['agent_url'] = agent_url
+        log.info(f"Dispatched job {job_id} to {agent_url}")
+        return {"job": job, "message": "Job dispatched"}
+    return {"error": "Job not found or not pending"}
+
+@app.get("/api/jobs")
+def list_jobs(status: Optional[str] = None):
+    """List jobs with optional status filter."""
+    with contextlib.closing(_get_conn()) as conn:
+        if status:
+            rows = conn.execute(
+                'SELECT job_id, campaign_id, campaign_name, youtube_url, status, '
+                'current_stage, progress, created_at, updated_at FROM jobs '
+                'WHERE status = ? ORDER BY created_at DESC',
+                (status,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                'SELECT job_id, campaign_id, campaign_name, youtube_url, status, '
+                'current_stage, progress, created_at, updated_at FROM jobs '
+                'ORDER BY created_at DESC LIMIT 50'
+            ).fetchall()
+    jobs = []
+    for row in rows:
+        jobs.append({
+            'job_id': row[0], 'campaign_id': row[1], 'campaign_name': row[2],
+            'youtube_url': row[3], 'status': row[4], 'stage': row[5],
+            'progress': row[6], 'created_at': row[7], 'updated_at': row[8],
+        })
+    return {"jobs": jobs, "count": len(jobs)}
+
+@app.post("/api/job")
+def create_new_job(body: Dict[str, Any]):
+    """Create a new job from n8n (for split architecture)."""
+    required = ["campaign_id", "campaign_name", "youtube_url"]
+    for field in required:
+        if field not in body:
+            raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
+    job_id = str(_uuid.uuid4())
+    _store_job(job_id, "pending", stage="queue", progress=0)
+    log.info(f"Created job {job_id} for campaign {body['campaign_id']}")
+    return {"job_id": job_id, **body, "status": "pending"}
+
+# ===== End queue endpoints =====
+
 
 
 def _submit_to_webhook(manifest: Dict[str, Any]) -> None:
