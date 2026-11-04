@@ -33,6 +33,18 @@ from .controller import get_candidate_highlights
 from .transcriber import transcribe, get_model
 from .ytdlp_opts import apply_cookies, YTDLP_COOKIES_B64
 
+# Imports for Scrapling HTTP fetcher (no Playwright needed) - lazy import
+def _get_scrapling_fetcher():
+    """Lazy import Scrapling Fetcher for HTTP-only anti-bot bypass."""
+    try:
+        from scrapling.fetchers import Fetcher
+        return Fetcher, True
+    except ImportError:
+        return None, False
+
+Fetcher, SCRAPLING_AVAILABLE = _get_scrapling_fetcher()
+
+
 
 # Imports for Scrapling - only used if available (lazy import to avoid startup issues)
 def _get_scrapling():
@@ -66,9 +78,9 @@ except ImportError:
 # Download helper using Scrapling for anti-bot bypass
 # ---------------------------------------------------------------------------
 def _download_video(url: str, work_dir: Path, max_duration: int = 600) -> Path:
-    """Download video using Scrapling's StealthySession for anti-bot bypass.
+    """Download video using Scrapling's Fetcher for anti-bot bypass (HTTP-only).
     
-    Uses browser automation + cookies to avoid YouTube's bot detection.
+    Uses TLS fingerprint spoofing via curl_cffi to avoid YouTube's bot detection.
     Falls back to yt-dlp if Scrapling is not available.
     """
     cache_key = f"source_video_{url.split('v=')[-1].split('&')[0]}.mp4"
@@ -79,57 +91,56 @@ def _download_video(url: str, work_dir: Path, max_duration: int = 600) -> Path:
 
     log.info(f"Downloading video (max {max_duration}s, 1080p): {url}")
 
-    # Try Scrapling first if available
-    if SCRAPLING_AVAILABLE and StealthySession:
+    # Try Scrapling HTTP fetcher first if available
+    if SCRAPLING_AVAILABLE and Fetcher:
         try:
-            # First, fetch the YouTube page with Scrapling to get cookies
-            with StealthySession(headless=True, solve_cloudflare=False) as session:
-                page = session.fetch(url, network_idle=True)
-                log.info(f"Scrapling fetched page: {page.status}")
+            # Fetch the YouTube page with Scrapling's Fetcher (HTTP-only, TLS fingerprint spoofing)
+            page = Fetcher.get(url, impersonate="chrome")
+            log.info(f"Scrapling Fetcher fetched page: {page.status}")
 
-                # Get the video info using yt-dlp (with Scrapling's browser fingerprint)
-                ydl_opts = {
-                    'outtmpl': str(work_dir / 'source_video.%(ext)s'),
-                    'format': 'bestvideo+bestaudio/best',
-                    'merge_output_format': 'mp4',
-                    'quiet': True,
-                    'noprogress': True,
-                    'fragment_retries': 3,
-                    'retries': 5,
-                    'writesubtitles': True,
-                    'writeautomaticsub': True,
-                    'subtitleslangs': ['en', 'en-US', 'en-GB'],
-                    'subtitlesformat': 'vtt',
-                }
+            # Get the video info using yt-dlp (with Scrapling's browser fingerprint)
+            ydl_opts = {
+                'outtmpl': str(work_dir / 'source_video.%(ext)s'),
+                'format': 'bestvideo+bestaudio/best',
+                'merge_output_format': 'mp4',
+                'quiet': True,
+                'noprogress': True,
+                'fragment_retries': 3,
+                'retries': 5,
+                'writesubtitles': True,
+                'writeautomaticsub': True,
+                'subtitleslangs': ['en', 'en-US', 'en-GB'],
+                'subtitlesformat': 'vtt',
+            }
 
-                # Apply cookies from ytdlp_opts
-                from .ytdlp_opts import apply_cookies
-                ydl_opts = apply_cookies(ydl_opts)
+            # Apply cookies from ytdlp_opts
+            from .ytdlp_opts import apply_cookies
+            ydl_opts = apply_cookies(ydl_opts)
 
-                # Use the cookies for the download
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    try:
-                        ydl.download([url])
-                    except Exception as e:
-                        raise ClipError(f"Download failed: {type(e).__name__}: {e}")
+            # Use the cookies for the download
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                try:
+                    ydl.download([url])
+                except Exception as e:
+                    raise ClipError(f"Download failed: {type(e).__name__}: {e}")
 
-                # Copy subtitles
-                for sub in work_dir.glob("source_video*.vtt"):
-                    sub_dest = cache_file.parent / f"{cache_file.stem}.en.vtt"
-                    try:
-                        import shutil as _shutil
-                        _shutil.copy2(sub, sub_dest)
-                    except Exception:
-                        pass
+            # Copy subtitles
+            for sub in work_dir.glob("source_video*.vtt"):
+                sub_dest = cache_file.parent / f"{cache_file.stem}.en.vtt"
+                try:
+                    import shutil as _shutil
+                    _shutil.copy2(sub, sub_dest)
+                except Exception:
+                    pass
 
-                # Move video file
-                for p in sorted(work_dir.glob("source_video.*")):
-                    if p.suffix.lower() in (".mp4", ".m4v"):
-                        if not cache_file.exists():
-                            p.rename(cache_file)
-                        return cache_file
+            # Move video file
+            for p in sorted(work_dir.glob("source_video.*")):
+                if p.suffix.lower() in (".mp4", ".m4v"):
+                    if not cache_file.exists():
+                        p.rename(cache_file)
+                    return cache_file
 
-                raise ClipError("yt-dlp produced no video file")
+            raise ClipError("yt-dlp produced no video file")
 
         except Exception as e:
             log.warning(f"Scrapling download failed: {e}, falling back to yt-dlp")
