@@ -15,15 +15,11 @@ ENV PYTHONUNBUFFERED=1 \
     AUDIO_CACHE=/app/.cache/audio \
     HF_HOME=/app/.cache/hf \
     TRANSFORMERS_CACHE=/app/.cache/hf \
-    DATABASES_CACHE_DIR=/app/.cache/db \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    DATABASES_CACHE_DIR=/app/.cache/db
 
-# Runtime deps: ffmpeg (video/audio processing) + curl (healthcheck) + playwright deps.
+# Runtime deps: ffmpeg (video/audio processing) + curl (healthcheck).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg curl ca-certificates \
-    libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
-    libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
-    libgbm1 libasound2 libpango-1.0-0 libcairo2 libatspi2.0-0 \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3 /usr/bin/python
 
@@ -32,9 +28,6 @@ WORKDIR /app
 # Install Python deps first (layer cache).
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Install Playwright browsers
-RUN playwright install --with-deps chromium
 
 # Copy the application package (runs as `python -m agent.run`).
 COPY agent /app/agent
